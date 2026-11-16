@@ -943,7 +943,7 @@ The following scenario determines whether the POC is complete.
 POC acceptance checklist
 IMPLEMENTATION VERIFICATION
 
-3/16 passed on the Windows development machine
+4/16 passed on the Windows development machine
 
 
 
@@ -952,7 +952,7 @@ IMPLEMENTATION VERIFICATION
 [ ] Import a 3,000-word personal essay
 [ ] Extract evidence-backed memory candidates
 [ ] Review significant proposed psychological interpretations
-[ ] Start a live voice session using Auto methodology
+[x] Start a live voice session using Auto methodology
 [ ] Receive concise spoken responses with acceptable latency
 [ ] Interrupt the agent while it is speaking
 [ ] Switch from Auto to CBT during the same session
