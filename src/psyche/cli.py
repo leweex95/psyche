@@ -174,6 +174,59 @@ def audio_check(
         console.print("Signal detected. This level check does not determine whether speech is intelligible.")
 
 
+@audio_app.command("transcribe-check")
+def audio_transcribe_check(
+    seconds: float = typer.Option(8.0, "--seconds", min=2.0, max=20.0),
+    device: str | None = typer.Option(None, "--device", help="Input device index or name (defaults to voice.input_device / Windows default)."),
+):
+    """Test microphone-to-Whisper locally without VAD, storage, or an LLM."""
+    config = load_config()
+    selected_device = _audio_device_value(device if device is not None else config.voice.input_device)
+    transcriber = LocalWhisperTranscriber(
+        config.voice.stt_model, config.data_dir / "models" / "faster-whisper",
+    )
+    microphone = SoundDeviceMicrophone(
+        sample_rate=config.voice.sample_rate,
+        frame_ms=config.voice.frame_ms,
+        device=selected_device,
+    )
+    try:
+        transcriber.prepare()
+        console.print(
+            f"Recording locally for {seconds:g} seconds. Say one sentence, then remain quiet. "
+            "Audio stays in memory and is not saved, uploaded, or sent to an LLM."
+        )
+
+        async def capture():
+            frames = []
+            captured_samples = 0
+            target_samples = int(seconds * config.voice.sample_rate)
+            stream = microphone.frames()
+            try:
+                async for frame in stream:
+                    frames.append(frame)
+                    captured_samples += len(frame.data) // 2
+                    if captured_samples >= target_samples:
+                        break
+            finally:
+                await stream.aclose()
+            return frames
+
+        frames = asyncio.run(capture())
+        transcript = asyncio.run(transcriber.transcribe(frames))
+    except (AudioDeviceError, TranscriptionError) as exc:
+        console.print(f"[red]Local microphone transcription check failed:[/red] {exc}")
+        raise typer.Exit(1) from exc
+
+    if transcript:
+        console.print(f"Local Whisper transcript: {transcript}")
+    else:
+        console.print(
+            "Local Whisper returned no transcript. The issue is in the captured audio or local speech recognition, "
+            "before VAD and before any LLM request."
+        )
+
+
 @voice_app.command("setup")
 def voice_setup():
     """Download and initialize local speech-recognition and speech voices."""

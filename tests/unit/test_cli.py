@@ -1,6 +1,7 @@
 from types import SimpleNamespace
 import struct
 import sys
+from pathlib import Path
 
 import pytest
 from typer.testing import CliRunner
@@ -89,6 +90,53 @@ def test_audio_check_is_local_and_reports_selected_input_levels(monkeypatch):
     assert "Psyche mono mix: RMS 500.0" in result.output
     assert "not saved" in result.output
     assert "uploaded" in result.output
+
+
+@pytest.mark.parametrize(
+    ("transcript", "expected"),
+    [
+        ("A clear local test transcript.", "Local Whisper transcript: A clear local test transcript."),
+        ("", "before VAD and before any LLM request"),
+    ],
+)
+def test_audio_transcribe_check_uses_only_local_capture_and_whisper(monkeypatch, transcript, expected):
+    config = SimpleNamespace(
+        voice=SimpleNamespace(input_device=None, sample_rate=16000, frame_ms=30, stt_model="base"),
+        data_dir=Path("test-data"),
+    )
+    monkeypatch.setattr(cli, "load_config", lambda: config)
+    constructions = []
+
+    class FakeTranscriber:
+        def __init__(self, *args):
+            constructions.append(("transcriber", args))
+
+        def prepare(self):
+            constructions.append(("prepare",))
+
+        async def transcribe(self, frames):
+            constructions.append(("transcribe", len(frames)))
+            return transcript
+
+    class FakeMicrophone:
+        def __init__(self, **kwargs):
+            constructions.append(("microphone", kwargs))
+
+        async def frames(self):
+            frame = SimpleNamespace(data=b"\0\0" * 16000)
+            yield frame
+            yield frame
+
+    monkeypatch.setattr(cli, "LocalWhisperTranscriber", FakeTranscriber)
+    monkeypatch.setattr(cli, "SoundDeviceMicrophone", FakeMicrophone)
+    monkeypatch.setattr(cli, "provider_for", lambda *_args: pytest.fail("local audio check must not initialize an LLM"))
+
+    result = CliRunner().invoke(cli.app, ["audio", "transcribe-check", "--seconds", "2"])
+
+    assert result.exit_code == 0, result.output
+    assert expected in result.output
+    assert "not saved, uploaded, or sent to an LLM" in result.output
+    assert ("transcribe", 2) in constructions
 
 
 def test_import_audio_uses_local_transcriber_without_cloud_provider(tmp_path, monkeypatch):
