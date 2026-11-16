@@ -17,6 +17,36 @@ class AudioDeviceError(RuntimeError):
     """Safe-to-display audio-device error."""
 
 
+def negotiate_input_format(sd, device: int | str | None, sample_rate: int):
+    """Find a supported PCM16 input format, preferring the VAD rate and full array."""
+    try:
+        device_info = sd.query_devices(device, "input")
+        max_channels = int(device_info["max_input_channels"])
+        native_rate = int(device_info["default_samplerate"])
+        if max_channels < 1:
+            raise AudioDeviceError("Selected input device has no microphone channels.")
+
+        channel_options = list(dict.fromkeys((max_channels, 1)))
+        rate_options = list(dict.fromkeys((sample_rate, native_rate)))
+        last_format_error = None
+        for rate in rate_options:
+            for channels in channel_options:
+                try:
+                    sd.check_input_settings(
+                        device=device, samplerate=rate, channels=channels, dtype="int16",
+                    )
+                    return device_info, rate, channels
+                except Exception as exc:
+                    last_format_error = exc
+        raise AudioDeviceError(
+            "Microphone does not support the requested or its reported default audio format."
+        ) from last_format_error
+    except AudioDeviceError:
+        raise
+    except Exception as exc:
+        raise AudioDeviceError("Could not inspect the selected microphone input format.") from exc
+
+
 class SoundDeviceMicrophone:
     """Capture mono PCM16 frames, adapting device-native channel/rate formats."""
 
@@ -38,42 +68,12 @@ class SoundDeviceMicrophone:
         loop = asyncio.get_running_loop()
         queue: asyncio.Queue[AudioFrame | BaseException] = asyncio.Queue(self.queue_frames)
         samples = self.sample_rate * self.frame_ms // 1000
-        try:
-            device_info = sd.query_devices(self.device, "input")
-            max_channels = int(device_info["max_input_channels"])
-            native_rate = int(device_info["default_samplerate"])
-            if max_channels < 1:
-                raise AudioDeviceError("Selected input device has no microphone channels.")
-
-            # Microphone arrays may expose their working signal only through
-            # multiple channels, and WASAPI often requires the device's native
-            # rate/channel count instead of the VAD's 16 kHz mono format.
-            channel_options = list(dict.fromkeys((max_channels, 1)))
-            rate_options = list(dict.fromkeys((self.sample_rate, native_rate)))
-            input_rate = input_channels = None
-            last_format_error = None
-            for rate in rate_options:
-                for channels in channel_options:
-                    try:
-                        sd.check_input_settings(
-                            device=self.device, samplerate=rate, channels=channels, dtype="int16",
-                        )
-                        input_rate, input_channels = rate, channels
-                        break
-                    except Exception as exc:
-                        last_format_error = exc
-                if input_rate is not None:
-                    break
-            if input_rate is None:
-                raise AudioDeviceError(
-                    "Microphone does not support the requested or its reported default audio format."
-                ) from last_format_error
-            if input_rate != self.sample_rate and audioop is None:
-                raise AudioDeviceError("Install voice support to resample microphone audio.")
-        except AudioDeviceError:
-            raise
-        except Exception as exc:
-            raise AudioDeviceError("Could not inspect the selected microphone input format.") from exc
+        # Microphone arrays may expose their working signal only through
+        # multiple channels, and WASAPI often requires the device's native
+        # rate/channel count instead of the VAD's 16 kHz mono format.
+        _, input_rate, input_channels = negotiate_input_format(sd, self.device, self.sample_rate)
+        if input_rate != self.sample_rate and audioop is None:
+            raise AudioDeviceError("Install voice support to resample microphone audio.")
 
         output_frame_bytes = samples * 2
         pending_pcm = bytearray()

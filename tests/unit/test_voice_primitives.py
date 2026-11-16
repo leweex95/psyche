@@ -18,6 +18,7 @@ from psyche.voice.synthesis import OpenAITTSSynthesizer
 from psyche.voice.playback import SoundDeviceAudioPlayer
 from psyche.voice.pipeline import VoiceTurnPipeline
 from psyche.voice.audio import SoundDeviceMicrophone
+from psyche.voice.diagnostics import capture_input_levels
 import json
 
 
@@ -87,6 +88,46 @@ async def test_microphone_negotiates_array_format_downmixes_and_resamples(monkey
     assert frame.sample_rate == 16000
     assert len(frame.data) == 960
     assert set(struct.iter_unpack("<h", frame.data)) == {(250,)}
+
+
+def test_microphone_diagnostic_reports_channels_and_app_mix_without_returning_audio():
+    class FakeStream:
+        def __init__(self, **kwargs):
+            self.kwargs = kwargs
+
+        def __enter__(self):
+            rows = [(1000, -1000)] * 80 + [(1000, 1000)] * 80
+            pcm = b"".join(struct.pack("<hh", *row) for row in rows)
+            self.kwargs["callback"](pcm, len(rows), None, 0)
+            return self
+
+        def __exit__(self, *_args):
+            return False
+
+    class FakeSoundDevice:
+        RawInputStream = FakeStream
+
+        @staticmethod
+        def query_devices(_device, _kind):
+            return {
+                "index": 0, "name": "Test microphone", "hostapi": 0,
+                "max_input_channels": 2, "default_samplerate": 16000,
+            }
+
+        @staticmethod
+        def check_input_settings(**_kwargs):
+            return None
+
+    levels = capture_input_levels(FakeSoundDevice, 0, target_rate=16000, seconds=0.01)
+
+    assert levels["sample_rate"] == 16000
+    assert levels["channels"] == 2
+    assert levels["frames"] == 160
+    assert levels["channel_levels"][0]["rms"] == 1000
+    assert levels["channel_levels"][1]["rms"] == 1000
+    assert levels["mixed_level"]["peak"] == 1000
+    assert levels["mixed_level"]["nonzero"] == 80
+    assert not any(isinstance(value, bytes) for value in levels.values())
 
 
 @pytest.mark.asyncio

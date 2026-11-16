@@ -16,7 +16,8 @@ from .storage.encryption import EncryptionError
 from .llm.cloud import OpenAIProvider, ProviderError
 from .conversation.orchestrator import ConversationOrchestrator
 from .memory.extractor import MemoryExtractor
-from .voice.audio import SoundDeviceMicrophone
+from .voice.audio import AudioDeviceError, SoundDeviceMicrophone, negotiate_input_format
+from .voice.diagnostics import capture_input_levels
 from .voice.playback import SoundDeviceAudioPlayer
 from .voice.pipeline import VoiceTurnPipeline
 from .voice.synthesis import OpenAITTSSynthesizer
@@ -28,10 +29,12 @@ session_app = typer.Typer(help="Manage conversation sessions")
 sessions_app = typer.Typer(help="Inspect stored sessions")
 config_app = typer.Typer(help="View configuration")
 memory_app = typer.Typer(help="Review and manage memory")
+audio_app = typer.Typer(help="Inspect local audio devices")
 app.add_typer(session_app, name="session")
 app.add_typer(sessions_app, name="sessions")
 app.add_typer(config_app, name="config")
 app.add_typer(memory_app, name="memory")
+app.add_typer(audio_app, name="audio")
 console = Console()
 
 
@@ -84,6 +87,88 @@ def doctor():
     console.print("Audio capture/VAD dependencies: " + ("available" if audio_ready else "missing (install the optional voice dependencies)"))
     console.print("Live voice: " + ("experimental; provider/device acceptance still needs a real run" if audio_ready else "not ready; install optional voice dependencies"))
     console.print("LLM credentials: " + ("present (quota/connectivity not checked)" if __import__("os").getenv("PSYCHE_LLM_API_KEY") or __import__("os").getenv("OPENAI_API_KEY") else "missing (text sessions require a key)"))
+
+
+def _audio_device_value(value: str | int | None) -> str | int | None:
+    if isinstance(value, str) and value.strip().isdigit():
+        return int(value.strip())
+    return value
+
+
+@audio_app.command("check")
+def audio_check(
+    seconds: float = typer.Option(5.0, "--seconds", min=1.0, max=15.0),
+    device: str | None = typer.Option(None, "--device", help="Input device index or name (defaults to voice.input_device / Windows default)."),
+):
+    """Measure local microphone levels without saving or uploading audio."""
+    try:
+        import sounddevice as sd
+    except ImportError as exc:
+        raise typer.BadParameter("Install voice support with `pip install -e '.[voice]'`.") from exc
+
+    config = load_config()
+    selected_device = _audio_device_value(device if device is not None else config.voice.input_device)
+    try:
+        devices = sd.query_devices()
+        host_apis = sd.query_hostapis()
+        default_input = sd.default.device[0]
+    except Exception as exc:
+        console.print(f"[red]Could not enumerate audio devices:[/red] {exc}")
+        raise typer.Exit(1) from exc
+
+    device_table = Table("Index", "Input device", "Host API", "Channels", "Default")
+    for index, info in enumerate(devices):
+        input_channels = int(info.get("max_input_channels", 0))
+        if input_channels < 1:
+            continue
+        api_index = int(info.get("hostapi", -1))
+        api_name = host_apis[api_index].get("name", "unknown") if 0 <= api_index < len(host_apis) else "unknown"
+        device_table.add_row(
+            str(index), str(info.get("name", "Unknown")), api_name, str(input_channels),
+            "yes" if index == default_input else "",
+        )
+    console.print(device_table)
+
+    try:
+        info, sample_rate, channels = negotiate_input_format(sd, selected_device, config.voice.sample_rate)
+    except AudioDeviceError as exc:
+        console.print(f"[red]Microphone check failed:[/red] {exc}")
+        raise typer.Exit(1) from exc
+
+    api_index = int(info.get("hostapi", -1))
+    api_name = host_apis[api_index].get("name", "unknown") if 0 <= api_index < len(host_apis) else "unknown"
+    console.print(
+        f"Selected input: #{info.get('index', '?')} {info.get('name', 'Unknown')} "
+        f"({api_name}); capture format {sample_rate} Hz, {channels} channel(s)."
+    )
+    console.print(
+        f"Capturing for about {seconds:g} seconds now. Speak a normal sentence at your usual distance. "
+        "Audio stays in memory for level measurements only; it is not saved or uploaded."
+    )
+    try:
+        result = capture_input_levels(sd, selected_device, config.voice.sample_rate, seconds)
+    except AudioDeviceError as exc:
+        console.print(f"[red]Microphone check failed:[/red] {exc}")
+        raise typer.Exit(1) from exc
+
+    for index, level in enumerate(result["channel_levels"], start=1):
+        dbfs = f"{level['dbfs']} dBFS" if level["dbfs"] is not None else "silence"
+        console.print(
+            f"Channel {index}: RMS {level['rms']} ({dbfs}), peak {level['peak']}, "
+            f"nonzero {level['nonzero']}/{level['samples']} samples, clipped {level['clipped']}"
+        )
+    mixed = result["mixed_level"]
+    mixed_dbfs = f"{mixed['dbfs']} dBFS" if mixed["dbfs"] is not None else "silence"
+    console.print(
+        f"Psyche mono mix: RMS {mixed['rms']} ({mixed_dbfs}), peak {mixed['peak']}, "
+        f"nonzero {mixed['nonzero']}/{mixed['samples']} samples, clipped {mixed['clipped']}"
+    )
+    if result["statuses"]:
+        console.print(f"[yellow]Input status notices:[/yellow] {', '.join(result['statuses'])}")
+    if mixed["peak"] == 0:
+        console.print("[red]No nonzero signal reached Psyche's mono capture mix during this check.[/red]")
+    else:
+        console.print("Signal detected. This level check does not determine whether speech is intelligible.")
 
 
 @session_app.command("start")
