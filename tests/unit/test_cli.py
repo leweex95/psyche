@@ -139,6 +139,59 @@ def test_audio_transcribe_check_uses_only_local_capture_and_whisper(monkeypatch,
     assert ("transcribe", 2) in constructions
 
 
+def test_audio_vad_check_reports_completed_utterance_and_local_transcript(monkeypatch):
+    frame = SimpleNamespace(data=b"\0\0" * 16000, sample_rate=16000, channels=1)
+    config = SimpleNamespace(
+        voice=SimpleNamespace(
+            input_device=None, sample_rate=16000, frame_ms=30, stt_model="base",
+            vad=SimpleNamespace(aggressiveness=2, end_silence_ms=550, pre_roll_ms=240),
+        ),
+        data_dir=Path("test-data"),
+    )
+    monkeypatch.setattr(cli, "load_config", lambda: config)
+
+    class FakeTranscriber:
+        def __init__(self, *_args):
+            pass
+
+        def prepare(self):
+            pass
+
+        async def transcribe(self, frames):
+            assert frames == [frame]
+            return "VAD local test transcript."
+
+    class FakeMicrophone:
+        def __init__(self, **_kwargs):
+            pass
+
+        async def frames(self):
+            yield frame
+
+    class FakeSegmenter:
+        def __init__(self, *_args, **_kwargs):
+            pass
+
+        async def events(self, frames):
+            async for _frame in frames:
+                yield cli.SpeechStarted([])
+                yield cli.UtteranceCompleted([frame])
+
+    monkeypatch.setattr(cli, "LocalWhisperTranscriber", FakeTranscriber)
+    monkeypatch.setattr(cli, "SoundDeviceMicrophone", FakeMicrophone)
+    monkeypatch.setattr(cli, "WebRtcSpeechClassifier", lambda *_args: object())
+    monkeypatch.setattr(cli, "UtteranceSegmenter", FakeSegmenter)
+    monkeypatch.setattr(cli, "provider_for", lambda *_args: pytest.fail("local VAD check must not initialize an LLM"))
+
+    result = CliRunner().invoke(cli.app, ["audio", "vad-check", "--seconds", "2"])
+
+    assert result.exit_code == 0, result.output
+    output = " ".join(result.output.split())
+    assert "VAD speech starts: 1; completed utterances: 1" in output
+    assert "VAD local test transcript." in output
+    assert "not saved, uploaded, or sent to an LLM" in output
+
+
 def test_import_audio_uses_local_transcriber_without_cloud_provider(tmp_path, monkeypatch):
     audio_file = tmp_path / "speech.wav"
     audio_file.write_bytes(b"synthetic local audio")

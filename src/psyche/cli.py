@@ -22,7 +22,7 @@ from .voice.playback import SoundDeviceAudioPlayer
 from .voice.pipeline import VoiceTurnPipeline
 from .voice.synthesis import LocalPiperSynthesizer, SynthesisError
 from .voice.transcription import LocalWhisperTranscriber, TranscriptionError
-from .voice.vad import UtteranceSegmenter, WebRtcSpeechClassifier
+from .voice.vad import SpeechStarted, UtteranceCompleted, UtteranceSegmenter, WebRtcSpeechClassifier
 
 app = typer.Typer(help="Local-first psychological support companion", no_args_is_help=True)
 session_app = typer.Typer(help="Manage conversation sessions")
@@ -225,6 +225,77 @@ def audio_transcribe_check(
             "Local Whisper returned no transcript. The issue is in the captured audio or local speech recognition, "
             "before VAD and before any LLM request."
         )
+
+
+@audio_app.command("vad-check")
+def audio_vad_check(
+    seconds: float = typer.Option(8.0, "--seconds", min=2.0, max=20.0),
+    device: str | None = typer.Option(None, "--device", help="Input device index or name (defaults to voice.input_device / Windows default)."),
+):
+    """Check local VAD utterance completion and Whisper without an LLM."""
+    config = load_config()
+    voice = config.voice
+    selected_device = _audio_device_value(device if device is not None else voice.input_device)
+    transcriber = LocalWhisperTranscriber(
+        voice.stt_model, config.data_dir / "models" / "faster-whisper",
+    )
+    microphone = SoundDeviceMicrophone(
+        sample_rate=voice.sample_rate, frame_ms=voice.frame_ms, device=selected_device,
+    )
+    segmenter = UtteranceSegmenter(
+        WebRtcSpeechClassifier(voice.vad.aggressiveness),
+        sample_rate=voice.sample_rate,
+        frame_ms=voice.frame_ms,
+        end_silence_ms=voice.vad.end_silence_ms,
+        pre_roll_ms=voice.vad.pre_roll_ms,
+    )
+    try:
+        transcriber.prepare()
+        console.print(
+            f"Recording locally for {seconds:g} seconds with the configured VAD. "
+            "Say one sentence, then remain quiet. Audio stays in memory and is not saved, uploaded, or sent to an LLM."
+        )
+
+        async def capture_and_segment():
+            utterances = []
+            speech_starts = 0
+            captured_samples = 0
+            target_samples = int(seconds * voice.sample_rate)
+            stream = microphone.frames()
+
+            async def limited_frames():
+                nonlocal captured_samples
+                try:
+                    async for frame in stream:
+                        yield frame
+                        captured_samples += len(frame.data) // 2
+                        if captured_samples >= target_samples:
+                            break
+                finally:
+                    await stream.aclose()
+
+            async for event in segmenter.events(limited_frames()):
+                if isinstance(event, SpeechStarted):
+                    speech_starts += 1
+                elif isinstance(event, UtteranceCompleted):
+                    utterances.append(event.frames)
+            return speech_starts, utterances
+
+        speech_starts, utterances = asyncio.run(capture_and_segment())
+        transcripts = [asyncio.run(transcriber.transcribe(frames)) for frames in utterances]
+    except (AudioDeviceError, TranscriptionError) as exc:
+        console.print(f"[red]Local VAD check failed:[/red] {exc}")
+        raise typer.Exit(1) from exc
+
+    console.print(f"VAD speech starts: {speech_starts}; completed utterances: {len(utterances)}")
+    if not utterances:
+        console.print(
+            "VAD did not complete an utterance during the recording. The live-session issue is in VAD segmentation, "
+            "before Whisper and before any LLM request."
+        )
+    for index, (frames, transcript) in enumerate(zip(utterances, transcripts), start=1):
+        duration = len(frames) * voice.frame_ms / 1000
+        console.print(f"Utterance {index} ({duration:.2f}s): {transcript or '[no Whisper transcript]'}")
 
 
 @voice_app.command("setup")
