@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import struct
+import threading
 import time
 from collections.abc import AsyncIterator
 
@@ -78,6 +79,7 @@ class SoundDeviceMicrophone:
         output_frame_bytes = samples * 2
         pending_pcm = bytearray()
         resample_state = None
+        overflowed = threading.Event()
 
         def offer(frame: AudioFrame | BaseException) -> None:
             if queue.full():
@@ -90,7 +92,13 @@ class SoundDeviceMicrophone:
 
         def callback(indata, _frames, _time_info, status):
             nonlocal resample_state
-            if status:
+            if overflowed.is_set():
+                return
+            input_overflow = getattr(status, "input_overflow", None)
+            if input_overflow is None:
+                input_overflow = bool(status)
+            if input_overflow:
+                overflowed.set()
                 loop.call_soon_threadsafe(offer, AudioDeviceError("Microphone input overflowed."))
                 return
             raw = memoryview(indata).cast("B").tobytes()
@@ -121,7 +129,10 @@ class SoundDeviceMicrophone:
         try:
             with sd.RawInputStream(
                 samplerate=input_rate,
-                blocksize=input_rate * self.frame_ms // 1000,
+                # Let PortAudio choose host-compatible callback sizes. PCM is
+                # buffered below into fixed-size VAD frames, so callback sizes
+                # need not match the VAD frame duration.
+                blocksize=0,
                 device=self.device,
                 channels=input_channels,
                 dtype="int16",

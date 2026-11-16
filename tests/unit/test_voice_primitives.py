@@ -1,6 +1,7 @@
 import asyncio
 import struct
 import sys
+from types import SimpleNamespace
 
 import pytest
 
@@ -16,7 +17,7 @@ from psyche.voice.transcription import LocalWhisperTranscriber, TranscriptionErr
 from psyche.voice.synthesis import LocalPiperSynthesizer
 from psyche.voice.playback import SoundDeviceAudioPlayer
 from psyche.voice.pipeline import VoiceTurnPipeline
-from psyche.voice.audio import SoundDeviceMicrophone
+from psyche.voice.audio import AudioDeviceError, SoundDeviceMicrophone
 from psyche.voice.diagnostics import capture_input_levels
 
 
@@ -99,7 +100,7 @@ async def test_microphone_negotiates_array_format_downmixes_and_resamples(monkey
             # Four distinct channels at 48 kHz; the expected mono sample is 250.
             samples = [100, 200, 300, 400] * 1440
             pcm = b"".join(struct.pack("<h", sample) for sample in samples)
-            self.kwargs["callback"](pcm, 1440, None, 0)
+            self.kwargs["callback"](pcm, 1440, None, SimpleNamespace(input_overflow=False))
             return self
 
         def __exit__(self, *_args):
@@ -128,6 +129,42 @@ async def test_microphone_negotiates_array_format_downmixes_and_resamples(monkey
     assert frame.sample_rate == 16000
     assert len(frame.data) == 960
     assert set(struct.iter_unpack("<h", frame.data)) == {(250,)}
+
+
+@pytest.mark.asyncio
+async def test_microphone_uses_adaptive_callback_blocks_and_surfaces_input_overflow(monkeypatch):
+    stream_options = {}
+
+    class FakeStream:
+        def __init__(self, **kwargs):
+            stream_options.update(kwargs)
+
+        def __enter__(self):
+            status = SimpleNamespace(input_overflow=True)
+            stream_options["callback"](b"\0\0" * 480, 480, None, status)
+            return self
+
+        def __exit__(self, *_args):
+            return False
+
+    class FakeSoundDevice:
+        RawInputStream = FakeStream
+
+        @staticmethod
+        def query_devices(_device, _kind):
+            return {"max_input_channels": 1, "default_samplerate": 16000}
+
+        @staticmethod
+        def check_input_settings(**_kwargs):
+            return None
+
+    monkeypatch.setitem(sys.modules, "sounddevice", FakeSoundDevice)
+    frames = SoundDeviceMicrophone().frames()
+
+    with pytest.raises(AudioDeviceError, match="Microphone input overflowed"):
+        await anext(frames)
+    await frames.aclose()
+    assert stream_options["blocksize"] == 0
 
 
 def test_microphone_diagnostic_reports_channels_and_app_mix_without_returning_audio():
