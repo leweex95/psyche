@@ -963,7 +963,7 @@ IMPLEMENTATION VERIFICATION
 [ ] Delete a memory and verify its derived representations are removed
 [x] Run the complete automated test suite successfully
 
-The completed local checks were verified with Python 3.13.9: documented editable install, encrypted initialization in an isolated temporary data directory, and the full automated test suite (61 passing). The suite now includes a narrow deterministic safety regression baseline, not a clinical evaluation. The synthetic 3,000-word text workflow is useful integration coverage but does not count as importing the owner's personal essay or using live providers. Live audio, memory behavior, and conversational quality must still be evaluated; the remaining items are intentionally unchecked until their specified acceptance scenario is performed.
+The completed local checks were verified with Python 3.13.9: documented editable install, encrypted initialization in an isolated temporary data directory, and the full automated test suite (62 passing). The suite now includes a narrow deterministic safety regression baseline, not a clinical evaluation. The synthetic 3,000-word text workflow is useful integration coverage but does not count as importing the owner's personal essay or using live providers. Live audio, memory behavior, and conversational quality must still be evaluated; the remaining items are intentionally unchecked until their specified acceptance scenario is performed.
 
 17. Documentation deliverables
 GPT Luna must maintain these documents:

@@ -1,5 +1,6 @@
 import pytest
 
+from psyche.conversation.prompts import SYSTEM_PROMPT
 from psyche.safety import acute_concern, safety_response
 
 
@@ -45,3 +46,13 @@ def test_reporting_an_existing_diagnosis_is_not_misread_as_a_diagnosis_request()
 
 def test_routine_distress_is_not_mistaken_for_an_acute_crisis():
     assert safety_response("I felt overwhelmed after a difficult meeting.") is None
+
+
+def test_system_policy_covers_plan_critical_safety_behaviors():
+    prompt = SYSTEM_PROMPT.casefold()
+    assert "without affirming unverified claims as facts" in prompt
+    assert "do not label or diagnose it" in prompt
+    assert "without demanding details" in prompt
+    assert "only or best source of support" in prompt
+    assert "accept the correction" in prompt
+    assert "do not treat silence or disconnection as evidence" in prompt
