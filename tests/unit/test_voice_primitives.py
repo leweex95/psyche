@@ -1,4 +1,5 @@
 import asyncio
+import base64
 
 import pytest
 
@@ -10,7 +11,7 @@ from psyche.voice.events import (
 )
 from psyche.voice.queues import PlaybackQueue
 from psyche.voice.vad import UtteranceSegmenter
-from psyche.voice.transcription import OpenAIRealtimeTranscriber
+from psyche.voice.transcription import OpenAIRealtimeTranscriber, TranscriptionError
 from psyche.voice.synthesis import OpenAITTSSynthesizer
 from psyche.voice.playback import SoundDeviceAudioPlayer
 from psyche.voice.pipeline import VoiceTurnPipeline
@@ -152,15 +153,86 @@ async def test_realtime_transcriber_sends_audio_and_returns_final_text(monkeypat
     partials = []
     transcriber = OpenAIRealtimeTranscriber(connector=connect, on_partial=partials.append)
     result = await transcriber.transcribe([
-        AudioFrame(data=b"\x01\x00", sample_rate=16000, captured_at=0),
+        AudioFrame(data=bytes(640), sample_rate=16000, captured_at=0),
+        AudioFrame(data=bytes(640), sample_rate=16000, captured_at=0.02),
     ])
 
     assert result == "hello there"
     assert partials == ["hello"]
     assert calls[0][0].endswith("?intent=transcription")
     assert connection.socket.sent[0]["type"] == "session.update"
+    assert connection.socket.sent[0]["session"]["audio"]["input"]["format"]["rate"] == 24000
     assert connection.socket.sent[1]["type"] == "input_audio_buffer.append"
-    assert connection.socket.sent[2]["type"] == "input_audio_buffer.commit"
+    assert len(base64.b64decode(connection.socket.sent[1]["audio"])) == 958
+    assert connection.socket.sent[2]["type"] == "input_audio_buffer.append"
+    assert len(base64.b64decode(connection.socket.sent[2]["audio"])) == 960
+    assert connection.socket.sent[3]["type"] == "input_audio_buffer.commit"
+
+
+@pytest.mark.asyncio
+async def test_realtime_transcriber_empty_stream_returns_without_connecting(monkeypatch):
+    monkeypatch.setenv("PSYCHE_LLM_API_KEY", "test-key")
+    called = False
+
+    def connect(*_args, **_kwargs):
+        nonlocal called
+        called = True
+        raise AssertionError("empty streams must not open a provider connection")
+
+    async def frames():
+        if False:
+            yield None
+
+    assert await OpenAIRealtimeTranscriber(connector=connect).transcribe_stream(frames()) == ""
+    assert not called
+
+
+@pytest.mark.asyncio
+async def test_realtime_transcriber_rejects_unsupported_rate_before_connecting(monkeypatch):
+    monkeypatch.setenv("PSYCHE_LLM_API_KEY", "test-key")
+    called = False
+
+    def connect(*_args, **_kwargs):
+        nonlocal called
+        called = True
+        raise AssertionError("invalid frame must be rejected before connecting")
+
+    with pytest.raises(TranscriptionError, match="16 or 24 kHz"):
+        await OpenAIRealtimeTranscriber(connector=connect).transcribe([
+            AudioFrame(data=b"\x00\x00", sample_rate=8000, captured_at=0),
+        ])
+    assert not called
+
+
+@pytest.mark.asyncio
+async def test_realtime_transcriber_reports_quota_failure_without_provider_payload(monkeypatch):
+    class FakeSocket:
+        async def send(self, _message):
+            pass
+
+        async def recv(self):
+            return json.dumps({
+                "type": "error",
+                "error": {
+                    "code": "insufficient_quota",
+                    "message": "private provider response details",
+                },
+            })
+
+    class FakeConnection:
+        async def __aenter__(self):
+            return FakeSocket()
+
+        async def __aexit__(self, *_args):
+            return False
+
+    monkeypatch.setenv("PSYCHE_LLM_API_KEY", "test-key")
+    transcriber = OpenAIRealtimeTranscriber(connector=lambda *_args, **_kwargs: FakeConnection())
+    with pytest.raises(TranscriptionError, match="provider account has no credits") as error:
+        await transcriber.transcribe([
+            AudioFrame(data=b"\x00\x00", sample_rate=16000, captured_at=0),
+        ])
+    assert "private provider response details" not in str(error.value)
 
 
 @pytest.mark.asyncio

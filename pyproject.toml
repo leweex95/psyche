@@ -15,8 +15,14 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-dev = ["pytest>=8,<9", "pytest-asyncio>=0.23,<2", "httpx>=0.27,<1"]
-voice = ["sounddevice>=0.5,<1", "webrtcvad-wheels>=2.0.14,<3", "websockets>=14,<16"]
+dev = [
+  "pytest>=8,<9", "pytest-asyncio>=0.23,<2", "httpx>=0.27,<1",
+  "audioop-lts>=0.2.1; python_version >= '3.13'",
+]
+voice = [
+  "sounddevice>=0.5,<1", "webrtcvad-wheels>=2.0.14,<3", "websockets>=14,<16",
+  "audioop-lts>=0.2.1; python_version >= '3.13'",
+]
 
 [project.scripts]
 psyche = "psyche.cli:app"

@@ -9,6 +9,13 @@ from collections.abc import AsyncIterator, Callable
 
 from .events import AudioFrame
 
+try:
+    import audioop
+except ImportError:  # Python 3.13+ supplies this via the voice extra.
+    audioop = None
+
+_REALTIME_SAMPLE_RATE = 24000
+
 
 class TranscriptionError(RuntimeError):
     """Safe-to-display live transcription failure."""
@@ -37,6 +44,25 @@ class OpenAIRealtimeTranscriber:
         key = os.getenv("PSYCHE_LLM_API_KEY") or os.getenv("OPENAI_API_KEY")
         if not key:
             raise TranscriptionError("No API key configured for speech transcription.")
+        frame_iterator = frames.__aiter__()
+        try:
+            first_frame = await anext(frame_iterator)
+        except StopAsyncIteration:
+            return ""
+
+        source_rate = first_frame.sample_rate
+        if source_rate not in {16000, _REALTIME_SAMPLE_RATE}:
+            raise TranscriptionError("Realtime transcription input must be 16 or 24 kHz PCM16")
+        if first_frame.channels != 1 or len(first_frame.data) % 2:
+            raise TranscriptionError("Realtime transcription requires mono PCM16 frames")
+        if source_rate != _REALTIME_SAMPLE_RATE and audioop is None:
+            raise TranscriptionError("Install voice support to resample microphone audio for realtime transcription.")
+
+        async def all_frames():
+            yield first_frame
+            async for frame in frame_iterator:
+                yield frame
+
         connector = self._connector
         if connector is None:
             try:
@@ -50,14 +76,13 @@ class OpenAIRealtimeTranscriber:
         try:
             async with asyncio.timeout(self.timeout):
                 async with connector(url, additional_headers=headers, open_timeout=self.timeout) as ws:
-                    rate: int | None = None
                     await ws.send(json.dumps({
                         "type": "session.update",
                         "session": {
                             "type": "transcription",
                             "audio": {
                                 "input": {
-                                    "format": {"type": "audio/pcm", "rate": rate},
+                                    "format": {"type": "audio/pcm", "rate": _REALTIME_SAMPLE_RATE},
                                     "transcription": {"model": self.model, "delay": "low"},
                                     "turn_detection": None,
                                 }
@@ -67,21 +92,20 @@ class OpenAIRealtimeTranscriber:
                     await self._wait_for(ws, {"session.updated"})
 
                     async def send_audio() -> None:
-                        nonlocal rate
-                        async for frame in frames:
-                            if rate is None:
-                                rate = frame.sample_rate
-                                if rate not in {16000, 24000}:
-                                    raise ValueError("Realtime transcription requires 16 or 24 kHz PCM16")
-                            if (frame.sample_rate != rate or frame.channels != 1
+                        rate_state = None
+                        async for frame in all_frames():
+                            if (frame.sample_rate != source_rate or frame.channels != 1
                                     or len(frame.data) % 2):
                                 raise ValueError("Realtime transcription requires consistent mono PCM16 frames")
+                            pcm = frame.data
+                            if source_rate != _REALTIME_SAMPLE_RATE:
+                                pcm, rate_state = audioop.ratecv(
+                                    pcm, 2, 1, source_rate, _REALTIME_SAMPLE_RATE, rate_state,
+                                )
                             await ws.send(json.dumps({
                                 "type": "input_audio_buffer.append",
-                                "audio": base64.b64encode(frame.data).decode("ascii"),
+                                "audio": base64.b64encode(pcm).decode("ascii"),
                             }))
-                        if rate is None:
-                            return
                         await ws.send(json.dumps({"type": "input_audio_buffer.commit"}))
 
                     sender = asyncio.create_task(send_audio())
@@ -115,7 +139,7 @@ class OpenAIRealtimeTranscriber:
                             elif event_type in {
                                 "conversation.item.input_audio_transcription.failed", "error"
                             }:
-                                raise TranscriptionError("Speech transcription failed; retry the turn.")
+                                self._raise_provider_error(event, initializing=False)
                     finally:
                         if not sender.done():
                             sender.cancel()
@@ -137,4 +161,20 @@ class OpenAIRealtimeTranscriber:
             if event_type in expected:
                 return event
             if event_type == "error":
-                raise TranscriptionError("Speech transcription session could not be initialized.")
+                OpenAIRealtimeTranscriber._raise_provider_error(event, initializing=True)
+
+    @staticmethod
+    def _raise_provider_error(event: dict, *, initializing: bool) -> None:
+        details = event.get("error")
+        if not isinstance(details, dict):
+            details = {}
+        code = details.get("code")
+        if code in {"insufficient_quota", "credit_balance_exhausted"}:
+            raise TranscriptionError("Speech transcription is unavailable: the provider account has no credits.")
+        if code == "invalid_api_key":
+            raise TranscriptionError("Speech transcription is unavailable: the provider rejected the configured credentials.")
+        message = (
+            "Speech transcription session could not be initialized."
+            if initializing else "Speech transcription failed; retry the turn."
+        )
+        raise TranscriptionError(message)
