@@ -1,0 +1,3 @@
+# Safety (initial baseline)
+
+Psyche is a supportive reflection tool, not a clinician, diagnostic instrument, or emergency service. System/method prompts prohibit diagnosis, fabricated history, dependence-promoting behavior, discouraging human support, and intensive trauma exercises. A small deterministic phrase check returns an immediate-support response for a few explicit phrases and redirects diagnosis requests. It is not comprehensive, context-aware, or reliable enough to establish safety. Imported content and memory are explicitly treated as data rather than instructions. Clinical review and the adversarial safety regression suite are required before any public deployment.

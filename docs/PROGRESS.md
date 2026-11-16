@@ -1,0 +1,39 @@
+# Development progress
+
+## Implemented and locally verified
+
+- Windows Python package/CLI, YAML configuration, encrypted SQLCipher storage with DPAPI-protected key, persistent text sessions, transcript listing/show/resume, and provider adapter.
+- Text/Markdown import and user-confirmed audio-file transcription with content-hash duplicate detection, conservative verbatim candidates, and explicit provider-backed semantic extraction from imported documents or user messages. Raw audio is not retained. Extracted candidates require exact evidence quotes, persist multi-source provenance, remain pending review, link normalized exact duplicates with audit events, and support approval/rejection, weighted FTS retrieval, correction, and source deletion with evidence-link propagation.
+- CBT/schema/auto prompt policies and in-session `/method` switching; configurable estimated-token budgets bound safety/method instructions, separately labeled profile/memory evidence, and chronologically continuous recent turns, with the current user turn last. Truncation markers are included within the estimates.
+- JSON export and explicit local-data deletion command; documentation for architecture, memory, voice, privacy, safety, decisions, testing, and progress.
+- Tests use an injected fake provider for CLI session continuity; Windows integration coverage includes memory lifecycle.
+- A Windows-only text-path E2E test now connects the workflow from a synthetic 3,000-word import through mocked source-quoted extraction, explicit candidate review, correction/profile generation, Auto-to-CBT conversation retrieval, transcript persistence, and deletion of source, memories, and derived profiles. This is a deterministic rehearsal, not live-provider or personal-essay acceptance.
+- Experimental voice path: typed voice events/state machine, bounded audio queue, continuous microphone/VAD during turns, OpenAI Realtime incremental STT with in-capture partial captions, streamed LLM text segmented into sentence-sized TTS requests, and speech-onset cancellation of generation/playback. Complete replies are persisted as delivered only after playback; interruption/failure stores only whole sentences whose final audio chunk was consumed, labeled `interrupted` or `incomplete`. The CLI offers retry, text-mode handoff, or end-and-save after a voice error. No successful live provider/hardware validation.
+- Memory review supports user-proposed relationship annotations and explicit, audited evolution: accepting a possible-contradiction link does not suppress either record; a confirmed evolution approves the newer sourced candidate and marks the older approved memory superseded without deleting its provenance.
+- `psyche memory profile` writes a versioned deterministic profile from approved atomic memories, records contributing IDs, invalidates the current snapshot when relevant memory/relation state changes, and adds a current profile to LLM context as untrusted evidence. Retrieval uses configurable weighted FTS ranking; weights/scoring are not clinically calibrated.
+- Cloud-dependent text/voice sessions and memory extraction now honor `privacy.cloud_processing_allowed`; with cloud disabled, session start/resume stops before provider initialization because a local provider is not implemented. Conversation context has separate configurable approximate-token limits for policies, profile, retrieved memories, and recent history.
+
+## Verification status (2026-11-16)
+
+Python 3.13.9 on Windows was used without installing Python. Earlier checks confirmed SQLCipher 4.12.0, DPAPI key handling, encrypted database unreadable by standard SQLite, CLI initialization/doctor, and session resume. Current verification: 38 tests pass; compileall succeeds; `pip check` reports no broken requirements (with a harmless invalid `~ip` distribution warning). A synthetic live LLM smoke request was attempted but rejected with an insufficient-credit response; TTS/STT requests were not attempted. Device enumeration found default input/output devices, but no microphone capture or speaker playback was run. Voice tests cover incremental transcription callbacks and spoken-prefix bookkeeping; context tests cover strict estimate limits, hostile-evidence separation, and provenance; the new text E2E test covers the integrated local workflow with mocked providers.
+
+## Milestone gates and end-to-end plan
+
+- Milestone 1 text-session gate: verified by encrypted storage smoke test and CLI fake-provider start/exit/resume/end integration test.
+- Memory limitations: possible contradictions are not discovered automatically; relation creation, review, and evolution are explicit user actions. Model-generated summaries, active-context updates, transcript-redaction propagation, and clinical calibration of retrieval ranking remain outstanding.
+- Milestone 2 voice gate: **in progress/not passed**. Continuous capture, incremental partial STT, sentence-buffered streaming LLM-to-TTS, conservative spoken-sentence-prefix recovery, and a CLI recovery choice are implemented. Token-to-audio synthesis, echo cancellation, successful live provider validation (blocked by exhausted credits), physical microphone/speaker validation, latency threshold measurement, and the 30-minute run remain outstanding.
+- Milestone 3 methodology: prompt-level CBT/schema/auto guardrails and switching implemented; curated methodology evaluations and quality gate not run.
+- Milestone 4 memory: provider-backed source-quoted extraction, deterministic normalized exact-link consolidation, multi-source provenance, user-reviewed relation/evolution handling, deterministic versioned profile generation/injection, and configurable weighted FTS retrieval are implemented alongside review/search/correction/deletion. Automatic semantic relation detection, calibrated weights, and complete derived-data propagation remain incomplete. Gate not passed.
+- Milestone 5 ingestion: UTF-8 text/Markdown import, confirmed audio-file transcription, duplicate detection, and opt-in semantic extraction implemented. Essay-driven recall acceptance remains incomplete. Gate not passed.
+- Text E2E preflight: deterministic workflow through import, memory review/correction, retrieval, transcript persistence, and deletion passes with mocked providers. This narrows integration risk but does not satisfy the live-voice end-to-end acceptance scenario.
+- Milestone 6 hardening: partial tests/docs only; adversarial safety evaluation, full leakage/deletion/payload audit, and clinical review not performed.
+
+The complete end-to-end POC is **not complete**. Hardware acceptance, live provider validation, 3,000-word essay recall scenario, the full 16-item checklist, conversational quality thresholds, independent clinical review, and actual voice/provider configuration remain outstanding. No claim of clinical efficacy or crisis-detection reliability is made.
+
+## Known defects and deferred work
+
+- Safety phrase rules are deliberately narrow and not a dependable risk classifier.
+- Memory search uses FTS candidates with a configurable heuristic ranking; its weights are not calibrated. Semantic extraction is explicit and review-only, and consolidation is exact-match only. Context token sizing is a conservative character estimate rather than provider tokenizer accounting.
+- Voice remains experimental; spoken-prefix recovery is conservative at complete sentence boundaries. Echo cancellation, token-to-audio synthesis, and live acceptance remain absent. Audio-file transcription and live voice have not been validated against the live provider.
+- No transcript retention policy, provider payload inspection/redaction, portable key migration, secure physical erasure, or provider-side deletion.
+- Manual validation of target hardware and usable provider credits is required; the attempted synthetic live LLM request was rejected before model execution due to insufficient credits.
