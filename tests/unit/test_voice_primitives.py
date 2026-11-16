@@ -11,7 +11,7 @@ from psyche.voice.events import (
     VoiceStateMachine,
 )
 from psyche.voice.queues import PlaybackQueue
-from psyche.voice.vad import SpeechFrame, SpeechStarted, UtteranceSegmenter
+from psyche.voice.vad import SpeechFrame, SpeechStarted, UtteranceCompleted, UtteranceSegmenter
 from psyche.voice.transcription import LocalWhisperTranscriber, TranscriptionError
 from psyche.voice.synthesis import LocalPiperSynthesizer
 from psyche.voice.playback import SoundDeviceAudioPlayer
@@ -279,6 +279,49 @@ async def test_local_whisper_file_transcription_uses_local_model(tmp_path):
     audio_file.write_bytes(b"not decoded by fake")
     transcriber = LocalWhisperTranscriber(model_factory=lambda *_args, **_kwargs: FakeModel())
     assert await transcriber.transcribe_file(audio_file) == "file transcript"
+
+
+@pytest.mark.asyncio
+async def test_non_streaming_pipeline_emits_speech_started_once_per_utterance():
+    events = []
+    frame = AudioFrame(data=b"speech", sample_rate=16000, captured_at=0)
+
+    class Microphone:
+        async def frames(self):
+            yield frame
+
+    class VAD:
+        async def events(self, _frames):
+            yield SpeechStarted([frame])
+            yield SpeechFrame(frame)
+            yield UtteranceCompleted([frame])
+
+    class Transcriber:
+        async def transcribe(self, _frames):
+            return "Local test transcript."
+
+    class Orchestrator:
+        async def respond_turn(self, _session_id, _text):
+            return "Hello."
+
+    class Synthesizer:
+        async def synthesize(self, _text):
+            yield b"\x01\x00"
+
+    class Player:
+        async def play(self, chunks, _interrupted):
+            _ = [chunk async for chunk in chunks]
+
+    pipeline = VoiceTurnPipeline(
+        Orchestrator(), Microphone(), VAD(), Transcriber(), Synthesizer(), Player(),
+        on_event=events.append,
+    )
+    await asyncio.wait_for(pipeline.run("session-1"), timeout=1)
+
+    event_types = [event.type.value for event in events]
+    assert event_types.count("speech_started") == 1
+    assert "transcript_final" in event_types
+    assert "turn_completed" in event_types
 
 
 @pytest.mark.asyncio

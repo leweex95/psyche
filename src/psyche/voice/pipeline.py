@@ -235,13 +235,14 @@ class VoiceTurnPipeline:
                                 transcription: asyncio.Task | None = None) -> str:
         if self.state.state is VoiceState.IDLE:
             self.state.transition(VoiceState.LISTENING)
+        speech_started_emitted = turn_id is not None
         turn_id = turn_id or str(uuid.uuid4())
         self._barge_event.clear()
         self._turn_busy = True
         self.state.transition(VoiceState.CAPTURING)
         self.state.transition(VoiceState.TRANSCRIBING)
         started = time.perf_counter()
-        if transcription is None:
+        if not speech_started_emitted:
             await self._emit(VoiceEventType.SPEECH_STARTED, session_id, turn_id)
         try:
             transcribe = transcription if transcription is not None else self.transcriber.transcribe(frames)
