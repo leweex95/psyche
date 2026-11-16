@@ -12,7 +12,7 @@ from psyche.voice.events import (
     VoiceStateMachine,
 )
 from psyche.voice.queues import PlaybackQueue
-from psyche.voice.vad import UtteranceSegmenter
+from psyche.voice.vad import SpeechFrame, SpeechStarted, UtteranceSegmenter
 from psyche.voice.transcription import OpenAIRealtimeTranscriber, TranscriptionError
 from psyche.voice.synthesis import OpenAITTSSynthesizer
 from psyche.voice.playback import SoundDeviceAudioPlayer
@@ -20,6 +20,48 @@ from psyche.voice.pipeline import VoiceTurnPipeline
 from psyche.voice.audio import SoundDeviceMicrophone
 from psyche.voice.diagnostics import capture_input_levels
 import json
+
+
+@pytest.mark.asyncio
+async def test_pipeline_cancellation_collects_failed_transcription_task():
+    pipeline = VoiceTurnPipeline(None, None, None, None, None, None)
+    operation = asyncio.get_running_loop().create_future()
+    waiter = asyncio.create_task(pipeline._until_barge_in(operation))
+    await asyncio.sleep(0)
+
+    operation.set_exception(TranscriptionError("provider quota exhausted"))
+    waiter.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await waiter
+
+    assert not operation._log_traceback
+    assert all(task.done() for task in asyncio.all_tasks() if task is not asyncio.current_task())
+
+
+@pytest.mark.asyncio
+async def test_pipeline_surfaces_streaming_transcription_failure_during_capture():
+    frame = AudioFrame(data=b"\x01\x00", sample_rate=16000, captured_at=0)
+
+    class Microphone:
+        async def frames(self):
+            yield frame
+
+    class VAD:
+        async def events(self, _frames):
+            yield SpeechStarted([frame])
+            await asyncio.sleep(0)
+            yield SpeechFrame(frame)
+
+    class Transcriber:
+        async def transcribe_stream(self, _frames, on_partial=None):
+            raise TranscriptionError("provider account has no credits")
+
+    pipeline = VoiceTurnPipeline(None, Microphone(), VAD(), Transcriber(), None, None)
+
+    with pytest.raises(TranscriptionError, match="no credits"):
+        await asyncio.wait_for(pipeline.run("session-1"), timeout=1)
+
+    assert pipeline.state.state is VoiceState.IDLE
 
 
 def test_voice_state_machine_accepts_plan_flow_and_rejects_invalid_edges():

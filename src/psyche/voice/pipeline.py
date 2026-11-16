@@ -90,6 +90,10 @@ class VoiceTurnPipeline:
                 async for event in self.vad.events(self.microphone.frames()):
                     if stop.is_set():
                         break
+                    if transcription is not None and transcription.done():
+                        # Surface provider failures during capture instead of
+                        # waiting for VAD to close the utterance (or shutdown).
+                        transcription.result()
                     if isinstance(event, SpeechStarted):
                         turn_id = str(uuid.uuid4())
                         await self._emit(VoiceEventType.SPEECH_STARTED, session_id, turn_id)
@@ -122,8 +126,9 @@ class VoiceTurnPipeline:
             except BaseException as exc:
                 await self._utterances.put(exc)
             finally:
-                if transcription is not None and not transcription.done():
-                    transcription.cancel()
+                if transcription is not None:
+                    if not transcription.done():
+                        transcription.cancel()
                     await asyncio.gather(transcription, return_exceptions=True)
                 task = asyncio.current_task()
                 if task is None or not task.cancelling():
@@ -170,16 +175,26 @@ class VoiceTurnPipeline:
         """Return (completed, result); cancel the operation on new speech onset."""
         operation = asyncio.ensure_future(awaitable)
         interrupt = asyncio.create_task(self._barge_event.wait())
-        done, pending = await asyncio.wait(
-            {operation, interrupt}, return_when=asyncio.FIRST_COMPLETED
-        )
-        if interrupt in done and self._barge_event.is_set():
-            operation.cancel()
-            await asyncio.gather(operation, return_exceptions=True)
-            return False, None
-        interrupt.cancel()
-        await asyncio.gather(interrupt, return_exceptions=True)
-        return True, await operation
+        try:
+            done, _ = await asyncio.wait(
+                {operation, interrupt}, return_when=asyncio.FIRST_COMPLETED
+            )
+            if interrupt in done and self._barge_event.is_set():
+                operation.cancel()
+                await asyncio.gather(operation, return_exceptions=True)
+                return False, None
+            interrupt.cancel()
+            await asyncio.gather(interrupt, return_exceptions=True)
+            return True, await operation
+        except BaseException:
+            # In particular, Ctrl+C cancels the pipeline coroutine while the
+            # streaming transcription task is still running. Always collect
+            # both tasks so provider errors do not become "never retrieved".
+            for task in (operation, interrupt):
+                if not task.done():
+                    task.cancel()
+            await asyncio.gather(operation, interrupt, return_exceptions=True)
+            raise
 
     async def _return_to_listening(self, session_id: str, turn_id: str, interrupted: bool) -> None:
         if interrupted:
