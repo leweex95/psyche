@@ -72,6 +72,7 @@ class VoiceTurnPipeline:
             stream_queue: asyncio.Queue | None = None
             turn_id: str | None = None
             transcription: asyncio.Task | None = None
+            discard_utterance = False
             stream_supported = callable(getattr(self.transcriber, "transcribe_stream", None))
 
             async def frame_stream(queue: asyncio.Queue):
@@ -95,6 +96,13 @@ class VoiceTurnPipeline:
                         # waiting for VAD to close the utterance (or shutdown).
                         transcription.result()
                     if isinstance(event, SpeechStarted):
+                        # Half-duplex playback is deliberate until echo
+                        # cancellation exists: speaker audio must never be
+                        # mistaken for a user interruption and cut off TTS.
+                        discard_utterance = self.state.state is VoiceState.SPEAKING
+                        if discard_utterance:
+                            stream_queue, turn_id, transcription = None, None, None
+                            continue
                         turn_id = str(uuid.uuid4())
                         await self._emit(VoiceEventType.SPEECH_STARTED, session_id, turn_id)
                         if stream_supported:
@@ -113,17 +121,19 @@ class VoiceTurnPipeline:
                         if self.state.state in {VoiceState.THINKING, VoiceState.SPEAKING}:
                             self._barge_event.set()
                     elif isinstance(event, SpeechFrame):
-                        if transcription is not None and not transcription.done():
+                        if not discard_utterance and transcription is not None and not transcription.done():
                             await stream_queue.put(event.frame)
                     elif isinstance(event, UtteranceCompleted):
-                        if transcription is not None and not transcription.done():
-                            await stream_queue.put(None)
-                        await self._utterances.put(_CapturedUtterance(
-                            frames=event.frames,
-                            turn_id=turn_id,
-                            transcription=transcription,
-                        ))
+                        if not discard_utterance:
+                            if transcription is not None and not transcription.done():
+                                await stream_queue.put(None)
+                            await self._utterances.put(_CapturedUtterance(
+                                frames=event.frames,
+                                turn_id=turn_id,
+                                transcription=transcription,
+                            ))
                         stream_queue, turn_id, transcription = None, None, None
+                        discard_utterance = False
             except asyncio.CancelledError:
                 raise
             except BaseException as exc:

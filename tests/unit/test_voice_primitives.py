@@ -394,6 +394,66 @@ async def test_new_speech_during_local_transcription_does_not_cancel_current_tur
 
 
 @pytest.mark.asyncio
+async def test_microphone_speech_during_playback_cannot_cut_off_assistant_audio():
+    events = []
+    playback_started = asyncio.Event()
+    frame = AudioFrame(data=b"speech", sample_rate=16000, captured_at=0)
+
+    class Microphone:
+        async def frames(self):
+            yield frame
+
+    class VAD:
+        async def events(self, _frames):
+            yield SpeechStarted([frame])
+            yield SpeechFrame(frame)
+            yield UtteranceCompleted([frame])
+            await playback_started.wait()
+            # Simulate the assistant's own speaker audio leaking into the mic.
+            yield SpeechStarted([frame])
+            yield SpeechFrame(frame)
+            yield UtteranceCompleted([frame])
+
+    class Transcriber:
+        def __init__(self):
+            self.calls = 0
+
+        async def transcribe(self, _frames):
+            self.calls += 1
+            return "User turn."
+
+    class Orchestrator:
+        async def respond_turn(self, _session_id, _text):
+            return "A complete spoken reply."
+
+    class Synthesizer:
+        async def synthesize(self, _text):
+            playback_started.set()
+            yield b"\x01\x00"
+            yield b"\x02\x00"
+
+    class Player:
+        def __init__(self):
+            self.played = []
+
+        async def play(self, chunks, _interrupted):
+            self.played = [chunk async for chunk in chunks]
+
+    transcriber, player = Transcriber(), Player()
+    pipeline = VoiceTurnPipeline(
+        Orchestrator(), Microphone(), VAD(), transcriber, Synthesizer(), player,
+        on_event=events.append,
+    )
+    await asyncio.wait_for(pipeline.run("session-1"), timeout=1)
+
+    assert transcriber.calls == 1
+    assert player.played == [b"\x01\x00", b"\x02\x00"]
+    assert sum(event.type.value == "speech_started" for event in events) == 1
+    assert any(event.type.value == "turn_completed" for event in events)
+    assert not any(event.type.value == "playback_interrupted" for event in events)
+
+
+@pytest.mark.asyncio
 async def test_pipeline_emits_partial_transcript_during_vad_capture():
     events = []
 

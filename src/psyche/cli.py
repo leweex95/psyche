@@ -417,7 +417,8 @@ def _run_voice(orch, db, sid, config, transcriber, synthesizer):
         "Local audio notice: microphone audio is transcribed on this device and assistant speech is synthesized "
         "on this device; audio is not sent to DeepSeek or stored as raw audio. The transcript, bounded recent "
         "context, current profile, relevant approved memories, and prompts are sent to the configured text LLM. "
-        "Echo suppression is not implemented, so headphones are recommended."
+        "To prevent echo-triggered cutoffs, speech detected while Psyche is speaking is ignored; wait until its "
+        "reply finishes before speaking. Echo suppression is not implemented, so headphones are recommended."
     )
     handed_off = False
     try:
