@@ -942,12 +942,12 @@ The following scenario determines whether the POC is complete.
 POC acceptance checklist
 IMPLEMENTATION VERIFICATION
 
-1/16 passed
+3/16 passed on the Windows development machine
 
 
 
-[ ] Install the application on Windows using documented commands
-[ ] Initialize encrypted local storage
+[x] Install the application on Windows using documented commands
+[x] Initialize encrypted local storage
 [ ] Import a 3,000-word personal essay
 [ ] Extract evidence-backed memory candidates
 [ ] Review significant proposed psychological interpretations
@@ -963,7 +963,7 @@ IMPLEMENTATION VERIFICATION
 [ ] Delete a memory and verify its derived representations are removed
 [x] Run the complete automated test suite successfully
 
-A passing automated test suite alone does not satisfy the acceptance criteria. Live audio, memory behavior, and conversational quality must also be manually evaluated.
+The completed local checks were verified with Python 3.13.9: documented editable install, encrypted initialization in an isolated temporary data directory, and the full automated test suite (41 passing). The synthetic 3,000-word text workflow is useful integration coverage but does not count as importing the owner's personal essay or using live providers. Live audio, memory behavior, and conversational quality must still be evaluated; the remaining items are intentionally unchecked until their specified acceptance scenario is performed.
 
 17. Documentation deliverables
 GPT Luna must maintain these documents:
