@@ -1,5 +1,6 @@
 import asyncio
 import base64
+import sys
 
 import pytest
 
@@ -420,6 +421,57 @@ async def test_player_writes_streamed_chunks_and_honors_interrupt():
     interrupted.set()
     await SoundDeviceAudioPlayer(stream_factory=factory).play(chunks(), interrupted)
     assert streams[1].writes == []
+
+
+@pytest.mark.asyncio
+async def test_player_resamples_for_selected_device_native_rate(monkeypatch):
+    class FakeStream:
+        def __init__(self, **kwargs):
+            self.kwargs = kwargs
+            self.writes = []
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return False
+
+        def write(self, chunk):
+            self.writes.append(chunk)
+
+    streams = []
+    checks = []
+
+    class FakeSoundDevice:
+        @staticmethod
+        def make_stream(**kwargs):
+            stream = FakeStream(**kwargs)
+            streams.append(stream)
+            return stream
+
+        RawOutputStream = staticmethod(make_stream)
+
+        @staticmethod
+        def check_output_settings(**kwargs):
+            checks.append(kwargs["samplerate"])
+            if kwargs["samplerate"] == 24000:
+                raise ValueError("device does not support this rate")
+
+        @staticmethod
+        def query_devices(_device, _kind):
+            return {"default_samplerate": 44100}
+
+    monkeypatch.setitem(sys.modules, "sounddevice", FakeSoundDevice)
+
+    async def chunks():
+        yield bytes(640)
+        yield bytes(640)
+
+    await SoundDeviceAudioPlayer(device=17).play(chunks(), asyncio.Event())
+
+    assert checks == [24000, 44100]
+    assert streams[0].kwargs["samplerate"] == 44100
+    assert [len(chunk) for chunk in streams[0].writes] == [1174, 1176]
 
 
 @pytest.mark.asyncio
