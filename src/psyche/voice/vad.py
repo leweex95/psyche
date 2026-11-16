@@ -27,6 +27,7 @@ class SpeechFrame:
 @dataclass(frozen=True)
 class UtteranceCompleted:
     frames: list[AudioFrame]
+    reason: str = "silence"
 
 
 class WebRtcSpeechClassifier:
@@ -91,7 +92,7 @@ class UtteranceSegmenter:
                         active, silence, speech_frames = None, 0, 0
                         pre_roll.clear()
         if active is not None and speech_frames >= self.min_speech_frames:
-            yield UtteranceCompleted(active)
+            yield UtteranceCompleted(active, reason="stream_end")
 
     async def utterances(self, frames: AsyncIterator[AudioFrame]) -> AsyncIterator[list[AudioFrame]]:
         async for event in self.events(frames):

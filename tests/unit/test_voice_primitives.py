@@ -243,6 +243,29 @@ async def test_vad_discards_short_false_trigger():
 
 
 @pytest.mark.asyncio
+async def test_vad_marks_silence_completion_separately_from_end_of_stream_flush():
+    class FakeClassifier:
+        def is_speech(self, pcm, _sample_rate):
+            return pcm == b"speech"
+
+    segmenter = UtteranceSegmenter(
+        FakeClassifier(), frame_ms=30, end_silence_ms=60, min_speech_ms=30,
+    )
+
+    async def frames(data):
+        for index, item in enumerate(data):
+            yield AudioFrame(data=item, sample_rate=16000, captured_at=float(index))
+
+    silence_events = [event async for event in segmenter.events(frames([b"speech", b"quiet", b"quiet"]))]
+    end_events = [event async for event in segmenter.events(frames([b"speech"]))]
+
+    silence_completion = next(event for event in silence_events if isinstance(event, UtteranceCompleted))
+    end_completion = next(event for event in end_events if isinstance(event, UtteranceCompleted))
+    assert silence_completion.reason == "silence"
+    assert end_completion.reason == "stream_end"
+
+
+@pytest.mark.asyncio
 async def test_local_whisper_transcriber_converts_pcm_and_returns_transcript():
     import numpy as np
 

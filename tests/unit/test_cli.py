@@ -188,6 +188,7 @@ def test_audio_vad_check_reports_completed_utterance_and_local_transcript(monkey
     assert result.exit_code == 0, result.output
     output = " ".join(result.output.split())
     assert "VAD speech starts: 1; completed utterances: 1" in output
+    assert "silence-closed: 1; flushed at recording end: 0" in output
     assert "VAD local test transcript." in output
     assert "not saved, uploaded, or sent to an LLM" in output
 

@@ -259,6 +259,8 @@ def audio_vad_check(
         async def capture_and_segment():
             utterances = []
             speech_starts = 0
+            silence_closed = 0
+            end_flushed = 0
             captured_samples = 0
             target_samples = int(seconds * voice.sample_rate)
             stream = microphone.frames()
@@ -279,19 +281,31 @@ def audio_vad_check(
                     speech_starts += 1
                 elif isinstance(event, UtteranceCompleted):
                     utterances.append(event.frames)
-            return speech_starts, utterances
+                    if event.reason == "stream_end":
+                        end_flushed += 1
+                    else:
+                        silence_closed += 1
+            return speech_starts, utterances, silence_closed, end_flushed
 
-        speech_starts, utterances = asyncio.run(capture_and_segment())
+        speech_starts, utterances, silence_closed, end_flushed = asyncio.run(capture_and_segment())
         transcripts = [asyncio.run(transcriber.transcribe(frames)) for frames in utterances]
     except (AudioDeviceError, TranscriptionError) as exc:
         console.print(f"[red]Local VAD check failed:[/red] {exc}")
         raise typer.Exit(1) from exc
 
-    console.print(f"VAD speech starts: {speech_starts}; completed utterances: {len(utterances)}")
+    console.print(
+        f"VAD speech starts: {speech_starts}; completed utterances: {len(utterances)}; "
+        f"silence-closed: {silence_closed}; flushed at recording end: {end_flushed}"
+    )
     if not utterances:
         console.print(
             "VAD did not complete an utterance during the recording. The live-session issue is in VAD segmentation, "
             "before Whisper and before any LLM request."
+        )
+    elif end_flushed:
+        console.print(
+            "At least one utterance was still active when recording stopped and was flushed for this diagnostic; "
+            "that does not count as VAD detecting live end-silence."
         )
     for index, (frames, transcript) in enumerate(zip(utterances, transcripts), start=1):
         duration = len(frames) * voice.frame_ms / 1000
