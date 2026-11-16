@@ -2,10 +2,10 @@
 
 Psyche is a local-first CLI psychological-support companion. It is not a clinician, diagnostic tool, or substitute for professional care. It supports encrypted text sessions, UTF-8 text/Markdown imports, user-confirmed audio transcription, reviewable memory candidates, methodology prompts, experimental voice sessions, and memory management. Live voice and full end-to-end acceptance are not yet verified.
 
-## Install (Windows 10/11, Python 3.12+)
+## Install (Windows 10/11, Python 3.13; tested with 3.13.9)
 
 ```powershell
-py -3 -m venv .venv
+py -3.13 -m venv .venv
 .\.venv\Scripts\Activate.ps1
 python -m pip install --upgrade pip
 pip install -e ".[dev]"

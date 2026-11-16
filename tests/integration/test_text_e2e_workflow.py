@@ -101,11 +101,19 @@ def test_text_e2e_import_review_correct_recall_and_delete(tmp_path: Path, monkey
         "What helps me feel grounded after work?",
         "/method", "cbt",
         "What helps me feel grounded after work?",
-        "/end",
+        "EOF",
     ])
-    monkeypatch.setattr(cli.typer, "prompt", lambda *_args, **_kwargs: next(prompts))
+
+    def session_prompt(*_args, **_kwargs):
+        value = next(prompts)
+        if value == "EOF":
+            raise EOFError
+        return value
+
+    monkeypatch.setattr(cli.typer, "prompt", session_prompt)
     conversation = runner.invoke(cli.app, ["session", "start", "--method", "auto"])
     assert conversation.exit_code == 0, conversation.output
+    assert "Session left open and saved" in conversation.output
     assert len(FakeConversationProvider.calls) == 2
     first_call, second_call = FakeConversationProvider.calls
     assert any(corrected in message.content for message in first_call)
@@ -118,6 +126,18 @@ def test_text_e2e_import_review_correct_recall_and_delete(tmp_path: Path, monkey
     transcript = " ".join(shown.output.split())
     assert "What helps me feel grounded after work?" in transcript
     assert "That sounds like a useful moment" in transcript
+
+    # A fresh CLI invocation simulates restart; resumed context must preserve
+    # both prior turns and the user's correction to the imported memory.
+    FakeConversationProvider.calls = []
+    resume_prompts = iter(["What helps me feel grounded after work?", "/end"])
+    monkeypatch.setattr(cli.typer, "prompt", lambda *_args, **_kwargs: next(resume_prompts))
+    resumed = runner.invoke(cli.app, ["session", "resume", session_id])
+    assert resumed.exit_code == 0, resumed.output
+    assert len(FakeConversationProvider.calls) == 1
+    resumed_call = FakeConversationProvider.calls[0]
+    assert any(corrected in message.content for message in resumed_call)
+    assert any("What helps me feel grounded after work?" in message.content for message in resumed_call)
 
     forgotten = runner.invoke(cli.app, ["memory", "forget", extracted_id, "--delete-source"])
     assert forgotten.exit_code == 0, forgotten.output
