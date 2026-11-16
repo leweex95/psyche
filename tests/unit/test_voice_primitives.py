@@ -348,6 +348,52 @@ async def test_non_streaming_pipeline_emits_speech_started_once_per_utterance():
 
 
 @pytest.mark.asyncio
+async def test_new_speech_during_local_transcription_does_not_cancel_current_turn():
+    events = []
+    transcription_started = asyncio.Event()
+    frame = AudioFrame(data=b"speech", sample_rate=16000, captured_at=0)
+
+    class Microphone:
+        async def frames(self):
+            yield frame
+
+    class VAD:
+        async def events(self, _frames):
+            yield SpeechStarted([frame])
+            yield SpeechFrame(frame)
+            yield UtteranceCompleted([frame])
+            await transcription_started.wait()
+            yield SpeechStarted([frame])
+
+    class Transcriber:
+        async def transcribe(self, _frames):
+            transcription_started.set()
+            await asyncio.sleep(0.02)
+            return "Local test transcript."
+
+    class Orchestrator:
+        async def respond_turn(self, _session_id, _text):
+            return "Hello."
+
+    class Synthesizer:
+        async def synthesize(self, _text):
+            yield b"\x01\x00"
+
+    class Player:
+        async def play(self, chunks, _interrupted):
+            _ = [chunk async for chunk in chunks]
+
+    pipeline = VoiceTurnPipeline(
+        Orchestrator(), Microphone(), VAD(), Transcriber(), Synthesizer(), Player(),
+        on_event=events.append,
+    )
+    await asyncio.wait_for(pipeline.run("session-1"), timeout=1)
+
+    assert any(event.type.value == "transcript_final" for event in events)
+    assert any(event.type.value == "turn_completed" for event in events)
+
+
+@pytest.mark.asyncio
 async def test_pipeline_emits_partial_transcript_during_vad_capture():
     events = []
 

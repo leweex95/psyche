@@ -107,7 +107,10 @@ class VoiceTurnPipeline:
                             # Include pre-roll and onset immediately, before later frames arrive.
                             for frame in event.initial_frames:
                                 await stream_queue.put(frame)
-                        if self._turn_busy:
+                        # A new onset must not cancel the utterance currently
+                        # being transcribed. It can still preempt generation or
+                        # playback; completed new utterances remain queued.
+                        if self.state.state in {VoiceState.THINKING, VoiceState.SPEAKING}:
                             self._barge_event.set()
                     elif isinstance(event, SpeechFrame):
                         if transcription is not None and not transcription.done():
