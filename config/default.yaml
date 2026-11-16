@@ -2,8 +2,8 @@ app:
   name: psyche
   log_level: WARNING
 llm:
-  provider: openai
-  model: gpt-4o-mini
+  provider: deepseek
+  model: deepseek-chat
   temperature: 0.5
   max_output_tokens: 300
   request_timeout_seconds: 30
@@ -34,9 +34,8 @@ voice:
   output_device: null
   sample_rate: 16000
   frame_ms: 30
-  stt_model: gpt-live-transcribe
-  tts_model: gpt-4o-mini-tts
-  tts_voice: alloy
+  stt_model: base
+  tts_voice: en_US-lessac-medium
   vad:
     enabled: true
     aggressiveness: 2

@@ -70,7 +70,7 @@ def test_text_e2e_import_review_correct_recall_and_delete(tmp_path: Path, monkey
     assert db.get_document(document_id)[2] == essay
     db.close()
 
-    monkeypatch.setattr(cli, "OpenAIProvider", FakeExtractionProvider)
+    monkeypatch.setattr(cli, "provider_for", lambda _config: FakeExtractionProvider())
     extracted = runner.invoke(cli.app, ["memory", "extract", "--document-id", document_id])
     assert extracted.exit_code == 0, extracted.output
     assert "1 pending candidates added" in extracted.output
@@ -96,7 +96,7 @@ def test_text_e2e_import_review_correct_recall_and_delete(tmp_path: Path, monkey
     assert corrected in " ".join(profile_result.output.split())
 
     FakeConversationProvider.calls = []
-    monkeypatch.setattr(cli, "OpenAIProvider", FakeConversationProvider)
+    monkeypatch.setattr(cli, "provider_for", lambda _config: FakeConversationProvider())
     prompts = iter([
         "What helps me feel grounded after work?",
         "/method", "cbt",

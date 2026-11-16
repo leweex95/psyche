@@ -6,8 +6,8 @@ from pydantic import BaseModel, Field
 
 
 class LLMConfig(BaseModel):
-    provider: str = "openai"
-    model: str = "gpt-4o-mini"
+    provider: str = "deepseek"
+    model: str = "deepseek-chat"
     temperature: float = Field(default=0.5, ge=0, le=2)
     max_output_tokens: int = Field(default=300, ge=1, le=8192)
     request_timeout_seconds: float = Field(default=30, gt=0, le=300)
@@ -65,9 +65,8 @@ class VoiceConfig(BaseModel):
     output_device: str | int | None = None
     sample_rate: int = Field(default=16000, ge=8000, le=48000)
     frame_ms: int = Field(default=30, ge=10, le=30)
-    stt_model: str = "gpt-live-transcribe"
-    tts_model: str = "gpt-4o-mini-tts"
-    tts_voice: str = "alloy"
+    stt_model: str = "base"
+    tts_voice: str = "en_US-lessac-medium"
     vad: VoiceVADConfig = VoiceVADConfig()
 
 

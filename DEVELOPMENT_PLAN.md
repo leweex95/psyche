@@ -64,7 +64,7 @@ Encrypted Local Persistence
 SQLite · Session archive · Memory evidence · Audio metadata
 
 External Providers
-LLM API · Optional cloud TTS
+Text-only LLM API (DeepSeek for the POC) · No cloud audio services
 
 The diagram represents logical dependencies, not an execution sequence. In particular, memory retrieval occurs before LLM generation, while memory extraction normally occurs asynchronously after a completed conversational turn.
 Architectural rules
@@ -312,9 +312,9 @@ Audio input: Use a Windows-compatible audio library such as sounddevice. Prefer 
 
 VAD: Use a local voice activity detector, such as Silero VAD, with configurable speech-start and silence-end thresholds.
 
-STT: Use an adapter supporting streaming or incremental transcription. A local Whisper implementation may be used, but standard Whisper chunk transcription is not true streaming recognition. The system must not claim low-latency streaming support merely because audio chunks are processed repeatedly.
+STT: Audio transcription must run locally; audio must never be sent to an external provider. A local Whisper implementation may transcribe completed VAD utterances, but standard Whisper chunk transcription is not true streaming recognition. The system must not claim low-latency streaming support merely because audio chunks are processed repeatedly. Partial captions are a later improvement, not a requirement to move audio to a cloud service.
 
-TTS: Use a provider adapter supporting chunked output when available. A non-streaming TTS fallback is acceptable for development but does not satisfy the final live-voice acceptance criteria.
+TTS: Speech synthesis must run locally; generated or user audio must never be sent to a cloud TTS service. Use a local voice adapter that produces bounded playback chunks. A non-streaming local sentence synthesis fallback is acceptable for the POC, with latency measured during acceptance.
 
 Playback: Use a dedicated playback queue with cancellation and interruption support.
 Required voice state machine
@@ -369,7 +369,7 @@ Transcript continuity	No missing completed turns
 
 Measure actual latency by pipeline stage. Do not hide network delays inside a single end-to-end metric.
 
-If the LLM or TTS provider fails, the application should preserve the session, display an actionable error, and permit recovery without restarting.
+If the text LLM or a local speech model fails, the application should preserve the session, display an actionable error, and permit recovery without restarting.
 
 8. Memory system — detailed specification
 The memory system must prioritize accuracy, traceability, bounded context size, and correction.
@@ -686,7 +686,7 @@ Include adversarial scenarios involving:
 Before any public deployment, obtain independent clinical review of these behaviors.
 
 11. Privacy and external API boundaries
-The user has authorized cloud LLM processing, not unrestricted transmission of all stored psychological information.
+The user has authorized text-only DeepSeek LLM processing for the POC, not transmission of audio or unrestricted transmission of all stored psychological information. All transcription and speech synthesis must remain local.
 
 Apply data minimization.
 Permitted cloud payload
@@ -701,14 +701,14 @@ Privacy controls
 Implement:
 - A startup notice explaining cloud processing.
 - Configurable transcript retention.
-- Local audio deletion after transcription.
+- Do not persist raw audio; keep live frames in memory only and do not upload audio.
 - API payload inspection in debug mode, with sensitive content redacted.
 - No analytics or telemetry.
 - No third-party error reporting by default.
 - No sensitive data in ordinary application logs.
 - A local export mechanism.
 - A full local-data deletion command.
-A privacy configuration should explicitly identify the LLM and TTS providers.
+A privacy configuration should identify the text LLM provider and confirm that STT/TTS are local.
 
 Cloud processing may involve provider retention or processing policies outside the application's control. The README must disclose this and avoid claiming that cloud-submitted data is exclusively stored locally.
 
@@ -722,7 +722,7 @@ app:
   log_level: INFO
 
 llm:
-  provider: openai
+  provider: deepseek
   model: ${PSYCHE_LLM_MODEL}
   temperature: 0.5
   max_output_tokens: 250
@@ -745,9 +745,10 @@ voice:
     end_silence_ms: 550
   stt:
     provider: local
-    model: configurable
+    model: faster-whisper
   tts:
-    provider: cloud
+    provider: local
+    model: piper
     voice: configurable
   barge_in:
     enabled: true
@@ -963,7 +964,7 @@ IMPLEMENTATION VERIFICATION
 [ ] Delete a memory and verify its derived representations are removed
 [x] Run the complete automated test suite successfully
 
-The completed local checks were verified with Python 3.13.9: documented editable install, encrypted initialization in an isolated temporary data directory, and the full automated test suite (62 passing). The suite now includes a narrow deterministic safety regression baseline, not a clinical evaluation. The synthetic 3,000-word text workflow is useful integration coverage but does not count as importing the owner's personal essay or using live providers. Live audio, memory behavior, and conversational quality must still be evaluated; the remaining items are intentionally unchecked until their specified acceptance scenario is performed.
+The completed local checks were verified with Python 3.13.9: documented editable install, encrypted initialization in an isolated temporary data directory, and the full automated test suite (64 passing). Local faster-whisper and Piper model inference also passed an offline synthetic-phrase smoke test; this is not microphone intelligibility, headset playback, or clinical evaluation. The suite includes a narrow deterministic safety regression baseline, not a clinical evaluation. The synthetic 3,000-word text workflow is useful integration coverage but does not count as importing the owner's personal essay or using live providers. Live audio, memory behavior, and conversational quality must still be evaluated; the remaining items are intentionally unchecked until their specified acceptance scenario is performed.
 
 17. Documentation deliverables
 GPT Luna must maintain these documents:

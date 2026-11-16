@@ -9,19 +9,21 @@ py -3.13 -m venv .venv
 .\.venv\Scripts\Activate.ps1
 python -m pip install --upgrade pip
 pip install -e ".[dev]"
-# Optional microphone, VAD, and streaming-transcription dependencies:
+# Optional local microphone, VAD, transcription, and speech dependencies:
 pip install -e ".[voice]"
 Copy-Item .env.example .env
 ```
 
-Set `PSYCHE_LLM_API_KEY` in `.env` for conversational and explicitly requested memory extraction. `PSYCHE_LLM_MODEL` optionally selects the model. Data is stored in `%USERPROFILE%\.psyche` by default; set `PSYCHE_DATA_DIR` to change it. The database encryption key is protected using Windows DPAPI for the current Windows account. Losing the Windows account/profile or moving the database to another computer can make it unrecoverable. Do not copy the key file or database as a plaintext backup; SQLCipher database files remain encrypted. The `.[voice]` extra installs microphone capture, local VAD, and WebSocket support for the experimental voice session.
+Set `DEEPSEEK_API_KEY` in `.env` for the text conversation model and explicitly requested memory extraction. `PSYCHE_LLM_MODEL` optionally selects the DeepSeek model. Psyche sends transcripts and bounded text context to DeepSeek for responses; it does **not** send microphone audio. Transcription (faster-whisper) and speech synthesis (Piper) run locally. Run `psyche voice setup` to download the selected speech-model weights; those model files are downloaded to `%USERPROFILE%\.psyche\models`, but captured audio is not uploaded. Data is stored in `%USERPROFILE%\.psyche` by default; set `PSYCHE_DATA_DIR` to change it. The database encryption key is protected using Windows DPAPI for the current Windows account. Losing the Windows account/profile or moving the database to another computer can make it unrecoverable. Do not copy the key file or database as a plaintext backup; SQLCipher database files remain encrypted. The `.[voice]` extra installs microphone capture, local VAD, faster-whisper, and Piper for the experimental voice session.
 
 ## Use
 
 ```powershell
 psyche init
 psyche doctor
+psyche voice setup
 psyche session start --mode text --method auto
+psyche session start --mode voice
 psyche sessions list
 psyche session resume SESSION_ID
 psyche sessions show SESSION_ID
@@ -40,7 +42,7 @@ In a session, use `/help`, `/method` to switch, `/memory`, and `/end`. A session
 
 ## Privacy and safety limitations
 
-Live voice audio is streamed to the configured transcription provider and not persisted locally. `psyche import-audio` uploads a selected file only after interactive confirmation, stores its transcript locally, and does not retain the raw file in the app database. Experimental voice capture/VAD continue during response generation and playback, allowing speech onset to cancel active work. Incremental STT emits partial captions during capture; LLM text streams into sentence-sized TTS requests, not token-to-audio synthesis. On interruption, only complete sentences confirmed played are saved, explicitly marked interrupted; echo cancellation is absent. Conversation requests include bounded recent session context, a current profile when available, relevant approved memories, and system/method prompts; generated speech text is sent to TTS. Set `privacy.cloud_processing_allowed: false` to block cloud-dependent conversations, audio import, and memory extraction; no local provider is implemented. Provider retention is outside app control. API credentials are read from environment variables and excluded from displayed configuration. Safety phrase matching is intentionally narrow and is not a reliable crisis detector; in immediate danger, contact local emergency services or a trusted person. Do not rely on this tool for diagnosis or emergency treatment. `psyche export` writes unencrypted JSON. `psyche memory forget ID --delete-source` removes linked imported documents or session messages; deleting a memory without this option leaves source history intact. `psyche delete-local-data --confirm` removes local data files, but cannot promise physical erasure or deletion of provider-side copies.
+Voice audio capture, VAD, utterance transcription (faster-whisper), and speech synthesis (Piper) run locally. `psyche import-audio` also transcribes locally after confirmation; raw audio is not copied into Psyche's database or sent to a provider. First-time model setup downloads model weights only. The recognized transcript, bounded recent context, current profile, relevant approved memories, and prompts are sent to DeepSeek to generate a reply; provider retention is outside app control. Assistant text is synthesized locally. Local Whisper currently transcribes after the VAD utterance ends (no partial captions); speech capture/VAD remain active during response generation and playback, allowing new speech to cancel active work. On interruption, only complete sentences confirmed played are saved as interrupted/incomplete; echo cancellation is absent. Set `privacy.cloud_processing_allowed: false` to block conversations and memory extraction; local audio import remains available. API credentials are read from environment variables and excluded from displayed configuration. Safety phrase matching is intentionally narrow and is not a reliable crisis detector; in immediate danger, contact local emergency services or a trusted person. Do not rely on this tool for diagnosis or emergency treatment. `psyche export` writes unencrypted JSON. `psyche memory forget ID --delete-source` removes linked imported documents or session messages; deleting a memory without this option leaves source history intact. `psyche delete-local-data --confirm` removes local data files, but cannot promise physical erasure or deletion of provider-side copies.
 
 ## Tests
 

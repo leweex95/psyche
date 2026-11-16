@@ -27,7 +27,7 @@ def test_cli_session_can_start_leave_open_resume_and_end(tmp_path: Path, monkeyp
         safety=SimpleNamespace(enabled=False),
     )
     monkeypatch.setattr(cli, "services", lambda: (config, Database(tmp_path)))
-    monkeypatch.setattr(cli, "OpenAIProvider", FakeProvider)
+    monkeypatch.setattr(cli, "provider_for", lambda config: FakeProvider(config.model, config.request_timeout_seconds))
     FakeProvider.replies = iter(["A first supportive reply.", "A reply after resuming."])
     inputs = iter(["My first thought.", "EOF", "A later thought.", "/end"])
 
@@ -84,7 +84,7 @@ def test_cloud_processing_disabled_blocks_start_and_resume(tmp_path: Path, monke
 
     database.close = close
     monkeypatch.setattr(cli, "services", lambda: (config, database))
-    monkeypatch.setattr(cli, "OpenAIProvider", lambda *_args: pytest.fail("provider must not be initialized"))
+    monkeypatch.setattr(cli, "provider_for", lambda *_args: pytest.fail("provider must not be initialized"))
     runner = CliRunner()
 
     start = runner.invoke(cli.app, ["session", "start"])

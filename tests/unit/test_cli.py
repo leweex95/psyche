@@ -2,6 +2,7 @@ from types import SimpleNamespace
 import struct
 import sys
 
+import pytest
 from typer.testing import CliRunner
 
 from psyche import cli
@@ -29,7 +30,7 @@ def test_provider_initialization_failure_closes_database_for_start_and_resume(mo
     def fail_provider(*_args):
         raise cli.ProviderError("safe provider failure")
 
-    monkeypatch.setattr(cli, "OpenAIProvider", fail_provider)
+    monkeypatch.setattr(cli, "provider_for", fail_provider)
     runner = CliRunner()
 
     start = runner.invoke(cli.app, ["session", "start"])
@@ -88,3 +89,53 @@ def test_audio_check_is_local_and_reports_selected_input_levels(monkeypatch):
     assert "Psyche mono mix: RMS 500.0" in result.output
     assert "not saved" in result.output
     assert "uploaded" in result.output
+
+
+def test_import_audio_uses_local_transcriber_without_cloud_provider(tmp_path, monkeypatch):
+    audio_file = tmp_path / "speech.wav"
+    audio_file.write_bytes(b"synthetic local audio")
+
+    class FakeDB:
+        def __init__(self):
+            self.stored = None
+            self.closed = False
+
+        def has_document_hash(self, _digest):
+            return False
+
+        def import_document(self, name, text, digest):
+            self.stored = (name, text, digest)
+            return "doc-local"
+
+        def add_memory_with_provenance(self, *_args, **_kwargs):
+            return "memory", True, True
+
+        def close(self):
+            self.closed = True
+
+    database = FakeDB()
+    config = SimpleNamespace(
+        data_dir=tmp_path / "data", voice=SimpleNamespace(stt_model="tiny"),
+        privacy=SimpleNamespace(cloud_processing_allowed=False),
+    )
+    monkeypatch.setattr(cli, "services", lambda: (config, database))
+    calls = []
+
+    class FakeTranscriber:
+        def __init__(self, model, model_dir):
+            calls.append((model, model_dir))
+
+        async def transcribe_file(self, path):
+            assert path == audio_file
+            return "A local transcript long enough for a candidate."
+
+    monkeypatch.setattr(cli, "LocalWhisperTranscriber", FakeTranscriber)
+    monkeypatch.setattr(cli, "provider_for", lambda *_args: pytest.fail("audio import must not initialize an LLM"))
+
+    result = CliRunner().invoke(cli.app, ["import-audio", str(audio_file)], input="y\n")
+
+    assert result.exit_code == 0, result.output
+    assert "locally" in result.output
+    assert calls == [("tiny", config.data_dir / "models" / "faster-whisper")]
+    assert database.stored[1] == "A local transcript long enough for a candidate."
+    assert database.closed

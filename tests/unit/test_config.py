@@ -19,6 +19,14 @@ def test_defaults_and_environment_override(tmp_path, monkeypatch):
     assert config.retrieval.max_memories == 12
 
 
+def test_default_voice_is_local_and_default_text_provider_is_deepseek():
+    config = load_config(Path(__file__).parents[2] / "config" / "default.yaml")
+    assert config.llm.provider == "deepseek"
+    assert config.llm.model == "deepseek-chat"
+    assert config.voice.stt_model == "base"
+    assert config.voice.tts_voice == "en_US-lessac-medium"
+
+
 def test_invalid_configuration_rejected(tmp_path):
     path = tmp_path / "bad.yaml"
     path.write_text("llm:\n  temperature: 9\n", encoding="utf-8")

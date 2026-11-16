@@ -1,5 +1,4 @@
 import asyncio
-import base64
 import struct
 import sys
 
@@ -13,13 +12,12 @@ from psyche.voice.events import (
 )
 from psyche.voice.queues import PlaybackQueue
 from psyche.voice.vad import SpeechFrame, SpeechStarted, UtteranceSegmenter
-from psyche.voice.transcription import OpenAIRealtimeTranscriber, TranscriptionError
-from psyche.voice.synthesis import OpenAITTSSynthesizer
+from psyche.voice.transcription import LocalWhisperTranscriber, TranscriptionError
+from psyche.voice.synthesis import LocalPiperSynthesizer
 from psyche.voice.playback import SoundDeviceAudioPlayer
 from psyche.voice.pipeline import VoiceTurnPipeline
 from psyche.voice.audio import SoundDeviceMicrophone
 from psyche.voice.diagnostics import capture_input_levels
-import json
 
 
 @pytest.mark.asyncio
@@ -245,183 +243,42 @@ async def test_vad_discards_short_false_trigger():
 
 
 @pytest.mark.asyncio
-async def test_realtime_transcriber_sends_audio_and_returns_final_text(monkeypatch):
-    class FakeSocket:
-        def __init__(self):
-            self.sent = []
-            self.events = iter([
-                {"type": "session.updated"},
-                {"type": "conversation.item.input_audio_transcription.delta", "delta": "hello"},
-                {"type": "conversation.item.input_audio_transcription.completed", "transcript": "hello there"},
-            ])
+async def test_local_whisper_transcriber_converts_pcm_and_returns_transcript():
+    import numpy as np
 
-        async def send(self, message):
-            self.sent.append(json.loads(message))
+    class FakeModel:
+        def transcribe(self, audio, **kwargs):
+            assert audio.dtype == np.float32
+            assert np.allclose(audio, [0.5, -0.5])
+            assert kwargs["vad_filter"] is False
+            return iter([type("Segment", (), {"text": " local words "})()]), object()
 
-        async def recv(self):
-            return json.dumps(next(self.events))
-
-    class FakeConnection:
-        def __init__(self):
-            self.socket = FakeSocket()
-
-        async def __aenter__(self):
-            return self.socket
-
-        async def __aexit__(self, *_args):
-            return False
-
-    connection = FakeConnection()
-    calls = []
-
-    def connect(url, **kwargs):
-        calls.append((url, kwargs))
-        return connection
-
-    monkeypatch.setenv("PSYCHE_LLM_API_KEY", "test-key")
-    partials = []
-    transcriber = OpenAIRealtimeTranscriber(connector=connect, on_partial=partials.append)
+    transcriber = LocalWhisperTranscriber(model_factory=lambda *_args, **_kwargs: FakeModel())
     result = await transcriber.transcribe([
-        AudioFrame(data=bytes(640), sample_rate=16000, captured_at=0),
-        AudioFrame(data=bytes(640), sample_rate=16000, captured_at=0.02),
+        AudioFrame(data=struct.pack("<hh", 16384, -16384), sample_rate=16000, captured_at=0),
     ])
-
-    assert result == "hello there"
-    assert partials == ["hello"]
-    assert calls[0][0].endswith("?intent=transcription")
-    assert connection.socket.sent[0]["type"] == "session.update"
-    assert connection.socket.sent[0]["session"]["audio"]["input"]["format"]["rate"] == 24000
-    assert connection.socket.sent[1]["type"] == "input_audio_buffer.append"
-    assert len(base64.b64decode(connection.socket.sent[1]["audio"])) == 958
-    assert connection.socket.sent[2]["type"] == "input_audio_buffer.append"
-    assert len(base64.b64decode(connection.socket.sent[2]["audio"])) == 960
-    assert connection.socket.sent[3]["type"] == "input_audio_buffer.commit"
+    assert result == "local words"
 
 
 @pytest.mark.asyncio
-async def test_realtime_transcriber_empty_stream_returns_without_connecting(monkeypatch):
-    monkeypatch.setenv("PSYCHE_LLM_API_KEY", "test-key")
-    called = False
-
-    def connect(*_args, **_kwargs):
-        nonlocal called
-        called = True
-        raise AssertionError("empty streams must not open a provider connection")
-
-    async def frames():
-        if False:
-            yield None
-
-    assert await OpenAIRealtimeTranscriber(connector=connect).transcribe_stream(frames()) == ""
-    assert not called
+async def test_local_whisper_transcriber_rejects_non_mono_or_wrong_rate():
+    transcriber = LocalWhisperTranscriber(model_factory=lambda *_args, **_kwargs: pytest.fail("must not load"))
+    with pytest.raises(TranscriptionError, match="16 kHz"):
+        await transcriber.transcribe([AudioFrame(data=b"\0\0", sample_rate=24000, captured_at=0)])
 
 
 @pytest.mark.asyncio
-async def test_realtime_transcriber_rejects_unsupported_rate_before_connecting(monkeypatch):
-    monkeypatch.setenv("PSYCHE_LLM_API_KEY", "test-key")
-    called = False
+async def test_local_whisper_file_transcription_uses_local_model(tmp_path):
+    class FakeModel:
+        def transcribe(self, path, **kwargs):
+            assert path.endswith("sample.wav")
+            assert kwargs["vad_filter"] is True
+            return iter([type("Segment", (), {"text": " file transcript "})()]), object()
 
-    def connect(*_args, **_kwargs):
-        nonlocal called
-        called = True
-        raise AssertionError("invalid frame must be rejected before connecting")
-
-    with pytest.raises(TranscriptionError, match="16 or 24 kHz"):
-        await OpenAIRealtimeTranscriber(connector=connect).transcribe([
-            AudioFrame(data=b"\x00\x00", sample_rate=8000, captured_at=0),
-        ])
-    assert not called
-
-
-@pytest.mark.asyncio
-async def test_realtime_transcriber_reports_quota_failure_without_provider_payload(monkeypatch):
-    class FakeSocket:
-        async def send(self, _message):
-            pass
-
-        async def recv(self):
-            return json.dumps({
-                "type": "error",
-                "error": {
-                    "code": "insufficient_quota",
-                    "message": "private provider response details",
-                },
-            })
-
-    class FakeConnection:
-        async def __aenter__(self):
-            return FakeSocket()
-
-        async def __aexit__(self, *_args):
-            return False
-
-    monkeypatch.setenv("PSYCHE_LLM_API_KEY", "test-key")
-    transcriber = OpenAIRealtimeTranscriber(connector=lambda *_args, **_kwargs: FakeConnection())
-    with pytest.raises(TranscriptionError, match="provider account has no credits") as error:
-        await transcriber.transcribe([
-            AudioFrame(data=b"\x00\x00", sample_rate=16000, captured_at=0),
-        ])
-    assert "private provider response details" not in str(error.value)
-
-
-@pytest.mark.asyncio
-async def test_realtime_transcriber_emits_partial_before_capture_finishes(monkeypatch):
-    partial_ready = asyncio.Event()
-    release_capture = asyncio.Event()
-
-    class FakeSocket:
-        def __init__(self):
-            self.audio_sent = asyncio.Event()
-            self.committed = asyncio.Event()
-            self.receives = 0
-
-        async def send(self, message):
-            event = json.loads(message)
-            if event["type"] == "input_audio_buffer.append":
-                self.audio_sent.set()
-            elif event["type"] == "input_audio_buffer.commit":
-                self.committed.set()
-
-        async def recv(self):
-            self.receives += 1
-            if self.receives == 1:
-                return json.dumps({"type": "session.updated"})
-            if self.receives == 2:
-                await self.audio_sent.wait()
-                return json.dumps({"type": "conversation.item.input_audio_transcription.delta", "delta": "hello"})
-            await self.committed.wait()
-            return json.dumps({"type": "conversation.item.input_audio_transcription.completed", "transcript": "hello there"})
-
-    class Connection:
-        def __init__(self):
-            self.socket = FakeSocket()
-
-        async def __aenter__(self):
-            return self.socket
-
-        async def __aexit__(self, *_args):
-            return False
-
-    connection = Connection()
-    monkeypatch.setenv("PSYCHE_LLM_API_KEY", "test-key")
-
-    async def frames():
-        yield AudioFrame(data=b"\x01\x00", sample_rate=16000, captured_at=0)
-        await release_capture.wait()
-
-    partials = []
-
-    def on_partial(text):
-        partials.append(text)
-        partial_ready.set()
-
-    transcriber = OpenAIRealtimeTranscriber(connector=lambda *_args, **_kwargs: connection)
-    task = asyncio.create_task(transcriber.transcribe_stream(frames(), on_partial=on_partial))
-    await asyncio.wait_for(partial_ready.wait(), timeout=1)
-    assert not release_capture.is_set()
-    assert partials == ["hello"]
-    release_capture.set()
-    assert await asyncio.wait_for(task, timeout=1) == "hello there"
+    audio_file = tmp_path / "sample.wav"
+    audio_file.write_bytes(b"not decoded by fake")
+    transcriber = LocalWhisperTranscriber(model_factory=lambda *_args, **_kwargs: FakeModel())
+    assert await transcriber.transcribe_file(audio_file) == "file transcript"
 
 
 @pytest.mark.asyncio
@@ -479,41 +336,24 @@ async def test_pipeline_emits_partial_transcript_during_vad_capture():
 
 
 @pytest.mark.asyncio
-async def test_tts_streams_pcm_chunks_with_configured_voice():
-    class Response:
-        async def __aenter__(self):
-            return self
+async def test_piper_synthesizer_generates_local_pcm_in_bounded_chunks(tmp_path):
+    class FakeVoice:
+        def synthesize(self, text):
+            assert text == "Hello there."
+            yield type("AudioChunk", (), {
+                "sample_rate": 24000,
+                "sample_width": 2,
+                "sample_channels": 1,
+                "audio_int16_bytes": bytes(5000),
+            })()
 
-        async def __aexit__(self, *_args):
-            return False
-
-        async def iter_bytes(self, chunk_size):
-            assert chunk_size == 4096
-            yield b"\x01\x00"
-            yield b"\x02\x00"
-
-    class Create:
-        def __init__(self):
-            self.args = None
-
-        def __call__(self, **kwargs):
-            self.args = kwargs
-            return Response()
-
-    create = Create()
-    client = type("Client", (), {})()
-    client.audio = type("Audio", (), {})()
-    client.audio.speech = type("Speech", (), {})()
-    client.audio.speech.with_streaming_response = type("Streaming", (), {})()
-    client.audio.speech.with_streaming_response.create = create
-
-    synthesizer = OpenAITTSSynthesizer("test-model", "test-voice", client=client)
+    synthesizer = LocalPiperSynthesizer(
+        "test-voice", tmp_path, voice_loader=lambda *_args, **_kwargs: FakeVoice(),
+        downloader=lambda *_args: None,
+    )
     chunks = [chunk async for chunk in synthesizer.synthesize("Hello there.")]
-    assert chunks == [b"\x01\x00", b"\x02\x00"]
-    assert create.args == {
-        "model": "test-model", "voice": "test-voice",
-        "input": "Hello there.", "response_format": "pcm",
-    }
+    assert [len(chunk) for chunk in chunks] == [4096, 904]
+    assert b"".join(chunks) == bytes(5000)
 
 
 @pytest.mark.asyncio

@@ -13,15 +13,15 @@ from rich.table import Table
 from .config import load_config
 from .storage.database import Database
 from .storage.encryption import EncryptionError
-from .llm.cloud import OpenAIProvider, ProviderError
+from .llm.cloud import ProviderError, provider_for
 from .conversation.orchestrator import ConversationOrchestrator
 from .memory.extractor import MemoryExtractor
 from .voice.audio import AudioDeviceError, SoundDeviceMicrophone, negotiate_input_format
 from .voice.diagnostics import capture_input_levels
 from .voice.playback import SoundDeviceAudioPlayer
 from .voice.pipeline import VoiceTurnPipeline
-from .voice.synthesis import OpenAITTSSynthesizer
-from .voice.transcription import OpenAIRealtimeTranscriber
+from .voice.synthesis import LocalPiperSynthesizer, SynthesisError
+from .voice.transcription import LocalWhisperTranscriber, TranscriptionError
 from .voice.vad import UtteranceSegmenter, WebRtcSpeechClassifier
 
 app = typer.Typer(help="Local-first psychological support companion", no_args_is_help=True)
@@ -30,11 +30,13 @@ sessions_app = typer.Typer(help="Inspect stored sessions")
 config_app = typer.Typer(help="View configuration")
 memory_app = typer.Typer(help="Review and manage memory")
 audio_app = typer.Typer(help="Inspect local audio devices")
+voice_app = typer.Typer(help="Set up local speech models")
 app.add_typer(session_app, name="session")
 app.add_typer(sessions_app, name="sessions")
 app.add_typer(config_app, name="config")
 app.add_typer(memory_app, name="memory")
 app.add_typer(audio_app, name="audio")
+app.add_typer(voice_app, name="voice")
 console = Console()
 
 
@@ -50,7 +52,7 @@ def _require_cloud_processing(config, db=None) -> None:
         if db is not None:
             db.close()
         raise typer.BadParameter(
-            "Cloud processing is disabled in configuration; this app has no local conversation provider."
+            "Cloud processing is disabled in configuration; the selected text LLM is not local."
         )
 
 
@@ -83,10 +85,11 @@ def doctor():
     except Exception as exc:
         console.print(f"[red]Storage check failed:[/red] {exc}")
         raise typer.Exit(1)
-    audio_ready = all(find_spec(name) for name in ("sounddevice", "webrtcvad"))
-    console.print("Audio capture/VAD dependencies: " + ("available" if audio_ready else "missing (install the optional voice dependencies)"))
-    console.print("Live voice: " + ("experimental; provider/device acceptance still needs a real run" if audio_ready else "not ready; install optional voice dependencies"))
-    console.print("LLM credentials: " + ("present (quota/connectivity not checked)" if __import__("os").getenv("PSYCHE_LLM_API_KEY") or __import__("os").getenv("OPENAI_API_KEY") else "missing (text sessions require a key)"))
+    voice_dependencies = all(find_spec(name) for name in ("sounddevice", "webrtcvad", "faster_whisper", "piper"))
+    console.print("Local audio/STT/TTS dependencies: " + ("available" if voice_dependencies else "missing (install the optional voice dependencies)"))
+    console.print("Live voice: " + ("local speech path ready; model/device acceptance still needs a real run" if voice_dependencies else "not ready; install optional voice dependencies"))
+    llm_key_env = "DEEPSEEK_API_KEY" if config.llm.provider.casefold() == "deepseek" else "OPENAI_API_KEY"
+    console.print("LLM credentials: " + ("present (quota/connectivity not checked)" if __import__("os").getenv(llm_key_env) else f"missing ({config.llm.provider} text sessions require a key)"))
 
 
 def _audio_device_value(value: str | int | None) -> str | int | None:
@@ -171,6 +174,29 @@ def audio_check(
         console.print("Signal detected. This level check does not determine whether speech is intelligible.")
 
 
+@voice_app.command("setup")
+def voice_setup():
+    """Download and initialize local speech-recognition and speech voices."""
+    load_dotenv()
+    config = load_config()
+    transcriber = LocalWhisperTranscriber(
+        config.voice.stt_model, config.data_dir / "models" / "faster-whisper",
+    )
+    synthesizer = LocalPiperSynthesizer(
+        config.voice.tts_voice, config.data_dir / "models" / "piper",
+    )
+    console.print("Preparing local model weights. This downloads model files only; microphone audio is never uploaded.")
+    try:
+        transcriber.prepare()
+        synthesizer.prepare()
+    except (TranscriptionError, SynthesisError) as exc:
+        raise typer.BadParameter(str(exc)) from exc
+    console.print(
+        f"Local voice models ready: faster-whisper {config.voice.stt_model}; "
+        f"Piper {config.voice.tts_voice}."
+    )
+
+
 @session_app.command("start")
 def session_start(mode: str = typer.Option("text", "--mode"), method: str = typer.Option("auto", "--method")):
     """Start an interactive text or experimental voice conversation."""
@@ -182,7 +208,7 @@ def session_start(mode: str = typer.Option("text", "--mode"), method: str = type
     try:
         config, db = services()
         _require_cloud_processing(config, db)
-        provider = OpenAIProvider(config.llm.model, config.llm.request_timeout_seconds)
+        provider = provider_for(config.llm)
     except (EncryptionError, ProviderError) as exc:
         if db is not None:
             db.close()
@@ -192,9 +218,22 @@ def session_start(mode: str = typer.Option("text", "--mode"), method: str = type
         if not audio_ready_for_session():
             db.close()
             raise typer.BadParameter("Install voice dependencies with `pip install -e '.[voice]'`.")
+        transcriber = LocalWhisperTranscriber(
+            config.voice.stt_model, config.data_dir / "models" / "faster-whisper",
+        )
+        synthesizer = LocalPiperSynthesizer(
+            config.voice.tts_voice, config.data_dir / "models" / "piper",
+        )
+        console.print("Loading local speech models. Missing model weights may be downloaded; user audio is never uploaded.")
+        try:
+            transcriber.prepare()
+            synthesizer.prepare()
+        except (TranscriptionError, SynthesisError) as exc:
+            db.close()
+            raise typer.BadParameter(str(exc)) from exc
         sid = asyncio.run(orch.start_session(method, "voice"))
         console.print(f"Voice session {sid} · {method}. Speak to take turns; press Ctrl+C to stop.")
-        _run_voice(orch, db, sid, config)
+        _run_voice(orch, db, sid, config, transcriber, synthesizer)
         return
     sid = asyncio.run(orch.start_session(method))
     console.print(f"Session {sid} · {method}. Type /help for commands.")
@@ -202,10 +241,10 @@ def session_start(mode: str = typer.Option("text", "--mode"), method: str = type
 
 
 def audio_ready_for_session() -> bool:
-    return all(find_spec(name) for name in ("sounddevice", "webrtcvad"))
+    return all(find_spec(name) for name in ("sounddevice", "webrtcvad", "faster_whisper", "piper"))
 
 
-def _run_voice(orch, db, sid, config):
+def _run_voice(orch, db, sid, config, transcriber, synthesizer):
     voice = config.voice
     microphone = SoundDeviceMicrophone(
         sample_rate=voice.sample_rate, frame_ms=voice.frame_ms, device=voice.input_device,
@@ -217,7 +256,7 @@ def _run_voice(orch, db, sid, config):
     )
     def render_voice_event(event):
         if event.type.value == "speech_started":
-            console.print("\n[bold]You (live):[/bold] ", end="")
+            console.print("\n[bold]You (listening):[/bold] ", end="")
         elif event.type.value == "transcript_partial":
             console.print(event.payload.get("text", ""), end="", style="dim")
         elif event.type.value == "transcript_final":
@@ -231,15 +270,15 @@ def _run_voice(orch, db, sid, config):
 
     pipeline = VoiceTurnPipeline(
         orch, microphone, vad,
-        OpenAIRealtimeTranscriber(voice.stt_model, config.llm.request_timeout_seconds),
-        OpenAITTSSynthesizer(voice.tts_model, voice.tts_voice, config.llm.request_timeout_seconds),
+        transcriber,
+        synthesizer,
         SoundDeviceAudioPlayer(sample_rate=24000, device=voice.output_device),
         on_event=render_voice_event,
     )
     console.print(
-        "Cloud processing notice: voice audio is sent for transcription; the transcript, bounded recent "
-        "context, current profile, relevant approved memories, and prompts are sent to your configured provider. "
-        "Raw audio is not stored locally; provider retention is outside this app's control. "
+        "Local audio notice: microphone audio is transcribed on this device and assistant speech is synthesized "
+        "on this device; audio is not sent to DeepSeek or stored as raw audio. The transcript, bounded recent "
+        "context, current profile, relevant approved memories, and prompts are sent to the configured text LLM. "
         "Echo suppression is not implemented, so headphones are recommended."
     )
     handed_off = False
@@ -286,7 +325,7 @@ def session_resume(session_id: str):
             db.close()
             raise typer.BadParameter("Session not found.")
         _require_cloud_processing(config, db)
-        provider = OpenAIProvider(config.llm.model, config.llm.request_timeout_seconds)
+        provider = provider_for(config.llm)
     except (EncryptionError, ProviderError) as exc:
         if db is not None:
             db.close()
@@ -416,52 +455,51 @@ def _add_verbatim_candidates(db, document_id: str, content: str) -> tuple[int, i
 @app.command("import-audio")
 def import_audio(
     file: Path = typer.Argument(...),
-    model: str = typer.Option("whisper-1", "--model"),
+    model: str | None = typer.Option(None, "--model", help="Local faster-whisper model name or path."),
 ):
-    """Transcribe an audio file via the configured cloud provider; raw audio is not retained."""
+    """Transcribe an audio file locally; raw audio is not copied or uploaded."""
     allowed_extensions = {".mp3", ".wav", ".m4a", ".mp4", ".mpeg", ".mpga", ".webm", ".oga", ".ogg", ".flac"}
     if file.suffix.casefold() not in allowed_extensions:
         raise typer.BadParameter("Use a supported audio file: mp3, wav, m4a, mp4, mpeg, mpga, webm, oga, ogg, or flac.")
     if not file.is_file():
         raise typer.BadParameter("Audio file not found.")
     try:
-        if file.stat().st_size > 25 * 1024 * 1024:
-            raise typer.BadParameter("Audio files must be 25 MB or smaller.")
         config, db = services()
     except EncryptionError as exc:
         raise typer.BadParameter(str(exc)) from exc
     try:
-        if not config.privacy.cloud_processing_allowed:
-            raise typer.BadParameter("Cloud processing is disabled in configuration.")
         digest = hashlib.sha256()
         with file.open("rb") as audio_file:
             for block in iter(lambda: audio_file.read(1024 * 1024), b""):
                 digest.update(block)
         content_hash = digest.hexdigest()
         if db.has_document_hash(content_hash):
-            console.print("This audio file was already imported; no upload or duplicate transcript was made.")
+            console.print("This audio file was already imported; no duplicate transcript was made.")
             return
         if not typer.confirm(
-            "Upload this audio file to your configured provider for transcription? The transcript will be stored locally; raw audio will not.",
+            "Transcribe this audio file locally and store its transcript? The audio will not be uploaded or copied into Psyche's database.",
             default=False,
         ):
-            console.print("Audio transcription cancelled; no upload was made.")
+            console.print("Audio transcription cancelled; no data was sent or stored.")
             return
         try:
-            provider = OpenAIProvider(config.llm.model, config.llm.request_timeout_seconds)
-            transcript = asyncio.run(provider.transcribe_audio(file, model))
-        except ProviderError as exc:
+            transcriber = LocalWhisperTranscriber(
+                model or config.voice.stt_model,
+                config.data_dir / "models" / "faster-whisper",
+            )
+            transcript = asyncio.run(transcriber.transcribe_file(file))
+        except TranscriptionError as exc:
             console.print(f"[red]{exc}[/red]")
             raise typer.Exit(code=1) from exc
         if not transcript:
-            raise typer.BadParameter("The provider returned an empty transcript; no source was stored.")
+            raise typer.BadParameter("Local transcription returned no speech; no source was stored.")
         document_id = db.import_document(f"{file.name} (transcript)", transcript, content_hash)
         if document_id is None:
             console.print("This audio file was already imported; no duplicate transcript was stored.")
             return
         added, linked, unchanged = _add_verbatim_candidates(db, document_id, transcript)
         console.print(
-            f"Transcript stored as source {document_id}; raw audio was not retained. "
+            f"Local transcript stored as source {document_id}; raw audio was not retained or uploaded. "
             f"{added} candidates pending review, {linked} existing candidates linked, "
             f"{unchanged} already-linked candidates unchanged."
         )
@@ -493,7 +531,7 @@ def memory_extract(
         if not config.privacy.cloud_processing_allowed:
             db.close()
             raise typer.BadParameter("Cloud processing is disabled in configuration.")
-        provider = OpenAIProvider(config.llm.model, config.llm.request_timeout_seconds)
+        provider = provider_for(config.llm)
     except (EncryptionError, ProviderError) as exc:
         raise typer.BadParameter(str(exc)) from exc
     extractor = MemoryExtractor(provider, db)

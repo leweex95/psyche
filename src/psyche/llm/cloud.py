@@ -1,7 +1,6 @@
 from typing import AsyncIterator
 import os
 import asyncio
-from pathlib import Path
 
 from .base import LLMMessage
 
@@ -10,14 +9,15 @@ class ProviderError(RuntimeError):
     """Safe-to-display provider failure; credentials and response bodies are omitted."""
 
 
-class OpenAIProvider:
-    def __init__(self, model: str, timeout: float = 30):
-        key = os.getenv("PSYCHE_LLM_API_KEY") or os.getenv("OPENAI_API_KEY")
+class OpenAICompatibleProvider:
+    def __init__(self, model: str, timeout: float = 30, *, base_url: str | None = None,
+                 key_env: str = "OPENAI_API_KEY", provider_name: str = "OpenAI"):
+        key = os.getenv(key_env)
         if not key:
-            raise ProviderError("No API key configured. Set PSYCHE_LLM_API_KEY in .env.")
+            raise ProviderError(f"No {provider_name} API key configured. Set {key_env} in .env.")
         try:
             from openai import AsyncOpenAI
-            self.client = AsyncOpenAI(api_key=key, timeout=timeout, max_retries=2)
+            self.client = AsyncOpenAI(api_key=key, base_url=base_url, timeout=timeout, max_retries=2)
         except Exception as exc:
             raise ProviderError("Could not initialize the LLM provider.") from exc
         self.model = model
@@ -68,16 +68,15 @@ class OpenAIProvider:
         except Exception as exc:
             raise ProviderError("The provider returned an invalid structured response.") from exc
 
-    async def transcribe_audio(self, audio_path: Path, model: str = "whisper-1") -> str:
-        try:
-            with audio_path.open("rb") as audio_file:
-                result = await self.client.audio.transcriptions.create(
-                    model=model, file=audio_file, response_format="text",
-                )
-            if isinstance(result, str):
-                return result.strip()
-            return (getattr(result, "text", "") or "").strip()
-        except asyncio.CancelledError:
-            raise
-        except Exception as exc:
-            raise ProviderError("Audio transcription failed or timed out; the audio file was not stored locally.") from exc
+def provider_for(config, timeout: float | None = None):
+    """Build the configured text-only conversation/extraction provider."""
+    provider = config.provider.casefold()
+    request_timeout = timeout if timeout is not None else config.request_timeout_seconds
+    if provider == "deepseek":
+        return OpenAICompatibleProvider(
+            config.model, request_timeout, base_url="https://api.deepseek.com",
+            key_env="DEEPSEEK_API_KEY", provider_name="DeepSeek",
+        )
+    if provider == "openai":
+        return OpenAICompatibleProvider(config.model, request_timeout)
+    raise ProviderError(f"Unsupported text LLM provider: {config.provider!r}.")
