@@ -48,6 +48,28 @@ async def test_safety_overrides_provider():
 
 
 @pytest.mark.asyncio
+async def test_streamed_voice_safety_response_bypasses_provider():
+    class NoProvider:
+        async def generate(self, *_args):
+            raise AssertionError("acute safety response must not call the provider")
+
+        async def stream(self, *_args):
+            raise AssertionError("acute safety response must not call the provider")
+
+    db = FakeDB()
+    config = SimpleNamespace(safety=SimpleNamespace(enabled=True), llm=SimpleNamespace(temperature=.5, max_output_tokens=200))
+    orchestrator = ConversationOrchestrator(db, NoProvider(), config)
+
+    response = [delta async for delta in orchestrator.stream_response_turn(
+        "session", "I am going to kill myself tonight"
+    )]
+
+    assert len(response) == 1
+    assert "emergency" in response[0].lower()
+    assert [message["role"] for message in db.messages] == ["user"]
+
+
+@pytest.mark.asyncio
 async def test_stream_response_persists_user_but_leaves_reply_for_delivery_boundary():
     db = FakeDB()
     config = SimpleNamespace(safety=SimpleNamespace(enabled=True), llm=SimpleNamespace(temperature=.5, max_output_tokens=200))
