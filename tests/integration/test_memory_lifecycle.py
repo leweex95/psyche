@@ -29,6 +29,42 @@ def test_memory_review_correction_retrieval_and_deletion(tmp_path):
 
 
 @pytest.mark.skipif(sys.platform != "win32", reason="Encrypted storage requires Windows DPAPI")
+def test_source_deletion_preserves_independently_supported_memory_then_purges_derivatives(tmp_path):
+    db = Database(tmp_path)
+    statement = "Taking a quiet walk helps me recover after difficult workdays."
+    first_source = db.import_document("first.md", "First independent note.", "first-source-hash")
+    second_source = db.import_document("second.md", "Second independent note.", "second-source-hash")
+    memory_id = db.add_memory(
+        statement, "coping_behavior", first_source, status="approved",
+        source_type="imported_document", source_span="char:0-24",
+    )
+    linked_id, added, linked = db.add_memory_with_provenance(
+        statement, "coping_behavior", second_source, "imported_document", "char:0-25",
+        status="approved",
+    )
+    assert (linked_id, added, linked) == (memory_id, False, True)
+
+    profile = db.generate_memory_profile()
+    assert profile["memory_ids"] == [memory_id]
+    assert db.delete_document(first_source)
+    assert db.get_document(first_source) is None
+    assert {source[0] for source in db.get_memory_sources(memory_id)} == {second_source}
+    active = next(row for row in db.list_memories() if row[0] == memory_id)
+    assert active[6] == "approved"
+    assert db.search_memories("quiet walk difficult workdays")[0][0] == memory_id
+
+    assert db.delete_document(second_source)
+    assert db.get_document(second_source) is None
+    assert db.get_memory_sources(memory_id) == []
+    assert next(row for row in db.list_memories() if row[0] == memory_id)[6] == "deleted"
+    assert db.search_memories("quiet walk difficult workdays") == []
+    assert db.get_current_memory_profile() is None
+    stored_profiles = db.conn.execute("SELECT memory_ids FROM memory_profiles").fetchall()
+    assert all(memory_id not in json.loads(row[0]) for row in stored_profiles)
+    db.close()
+
+
+@pytest.mark.skipif(sys.platform != "win32", reason="Encrypted storage requires Windows DPAPI")
 def test_memory_contradiction_review_and_user_confirmed_evolution(tmp_path):
     db = Database(tmp_path)
     old_source = db.import_document("old.md", "A previously stored preference", "old-hash")
