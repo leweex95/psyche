@@ -195,3 +195,60 @@ def test_context_assembler_caps_profile_memories_and_history_and_keeps_current_t
     assert "memory=0" in evidence
     assert "memory=1 source=" not in evidence
     assert all(len(message.content) < 4000 for message in messages)
+
+
+@pytest.mark.asyncio
+async def test_actual_provider_call_contains_only_bounded_session_context():
+    class PayloadDB(FakeDB):
+        def __init__(self):
+            super().__init__()
+            self.messages = [
+                {"role": "user", "content": "OLD-PRIVATE-TRANSCRIPT " * 100, "delivery_status": "delivered"},
+                {"role": "assistant", "content": "middle response", "delivery_status": "delivered"},
+                {"role": "user", "content": "recent concern", "delivery_status": "delivered"},
+            ]
+
+        def list_sessions(self):
+            return [("session", "auto")]
+
+        def search_memories(self, _query, *, limit, methodology, weights):
+            assert limit == 2
+            assert methodology == "auto"
+            assert weights is None
+            return [("approved-1", "goal", "I want more rest.", "user_reported", 1, 1.0, "approved", "essay-1")]
+
+        def get_current_memory_profile(self):
+            return {"version": 2, "content": "## GOALS\n- [approved-1] More rest."}
+
+    class CaptureProvider:
+        def __init__(self):
+            self.request = None
+
+        async def generate(self, messages, temperature, max_output_tokens):
+            self.request = (messages, temperature, max_output_tokens)
+            return "A response."
+
+    db = PayloadDB()
+    provider = CaptureProvider()
+    config = SimpleNamespace(
+        safety=SimpleNamespace(enabled=True),
+        llm=SimpleNamespace(temperature=.25, max_output_tokens=77),
+        retrieval=SimpleNamespace(weights=None, max_memories=2),
+        context=SimpleNamespace(
+            max_recent_messages=2, recent_conversation_tokens=50,
+            profile_tokens=100, retrieved_memories_tokens=100,
+            safety_instructions_tokens=100, methodology_tokens=100,
+        ),
+    )
+    orchestrator = ConversationOrchestrator(db, provider, config)
+
+    await orchestrator.process_turn("session", "CURRENT-USER-TURN")
+
+    messages, temperature, max_output_tokens = provider.request
+    assert "OLD-PRIVATE-TRANSCRIPT" not in "\n".join(message.content for message in messages)
+    assert messages[-1].role == "user"
+    assert messages[-1].content == "CURRENT-USER-TURN"
+    assert "approved-1" in "\n".join(message.content for message in messages)
+    assert sum(_estimate_tokens(message.content) for message in messages[2:]) <= 50
+    assert temperature == .25
+    assert max_output_tokens == 77

@@ -18,8 +18,14 @@ class OpenAICompatibleProvider:
         try:
             from openai import AsyncOpenAI
             self.client = AsyncOpenAI(api_key=key, base_url=base_url, timeout=timeout, max_retries=2)
-        except Exception as exc:
-            raise ProviderError("Could not initialize the LLM provider.") from exc
+        except Exception:
+            # SDK exceptions may embed request headers or other sensitive data.
+            # Do not retain them as a displayed or inspectable exception chain.
+            failed = True
+        else:
+            failed = False
+        if failed:
+            raise ProviderError("Could not initialize the LLM provider.")
         self.model = model
 
     async def generate(self, messages: list[LLMMessage], temperature: float, max_output_tokens: int) -> str:
@@ -28,11 +34,16 @@ class OpenAICompatibleProvider:
                 model=self.model, messages=[m.model_dump() for m in messages],
                 temperature=temperature, max_tokens=max_output_tokens,
             )
-            return result.choices[0].message.content or ""
+            response = result.choices[0].message.content or ""
         except asyncio.CancelledError:
             raise
-        except Exception as exc:
-            raise ProviderError("The LLM request failed or timed out. Your session was preserved; try again.") from exc
+        except Exception:
+            failed = True
+        else:
+            failed = False
+        if failed:
+            raise ProviderError("The LLM request failed or timed out. Your session was preserved; try again.")
+        return response
 
     async def stream(self, messages: list[LLMMessage], temperature: float, max_output_tokens: int) -> AsyncIterator[str]:
         try:
@@ -46,8 +57,12 @@ class OpenAICompatibleProvider:
                     yield delta
         except asyncio.CancelledError:
             raise
-        except Exception as exc:
-            raise ProviderError("The LLM stream failed. Your session was preserved; try again.") from exc
+        except Exception:
+            failed = True
+        else:
+            failed = False
+        if failed:
+            raise ProviderError("The LLM stream failed. Your session was preserved; try again.")
 
     async def generate_structured(self, messages: list[LLMMessage], response_model):
         try:
@@ -60,13 +75,21 @@ class OpenAICompatibleProvider:
             )
         except asyncio.CancelledError:
             raise
-        except Exception as exc:
-            raise ProviderError("The structured LLM request failed or timed out.") from exc
+        except Exception:
+            failed = True
+        else:
+            failed = False
+        if failed:
+            raise ProviderError("The structured LLM request failed or timed out.")
         try:
             text = result.choices[0].message.content or "{}"
             return response_model.model_validate_json(text)
-        except Exception as exc:
-            raise ProviderError("The provider returned an invalid structured response.") from exc
+        except Exception:
+            failed = True
+        else:
+            failed = False
+        if failed:
+            raise ProviderError("The provider returned an invalid structured response.")
 
 def provider_for(config, timeout: float | None = None):
     """Build the configured text-only conversation/extraction provider."""
