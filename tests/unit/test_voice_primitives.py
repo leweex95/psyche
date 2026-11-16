@@ -1,5 +1,6 @@
 import asyncio
 import base64
+import struct
 import sys
 
 import pytest
@@ -16,6 +17,7 @@ from psyche.voice.transcription import OpenAIRealtimeTranscriber, TranscriptionE
 from psyche.voice.synthesis import OpenAITTSSynthesizer
 from psyche.voice.playback import SoundDeviceAudioPlayer
 from psyche.voice.pipeline import VoiceTurnPipeline
+from psyche.voice.audio import SoundDeviceMicrophone
 import json
 
 
@@ -42,6 +44,49 @@ def test_audio_frame_is_typed_and_rejects_invalid_sample_rate():
     assert frame.channels == 1
     with pytest.raises(ValueError):
         AudioFrame(data=b"", sample_rate=0, captured_at=0)
+
+
+@pytest.mark.asyncio
+async def test_microphone_negotiates_array_format_downmixes_and_resamples(monkeypatch):
+    settings = []
+
+    class FakeStream:
+        def __init__(self, **kwargs):
+            self.kwargs = kwargs
+
+        def __enter__(self):
+            # Four distinct channels at 48 kHz; the expected mono sample is 250.
+            samples = [100, 200, 300, 400] * 1440
+            pcm = b"".join(struct.pack("<h", sample) for sample in samples)
+            self.kwargs["callback"](pcm, 1440, None, 0)
+            return self
+
+        def __exit__(self, *_args):
+            return False
+
+    class FakeSoundDevice:
+        @staticmethod
+        def query_devices(_device, _kind):
+            return {"max_input_channels": 4, "default_samplerate": 48000}
+
+        @staticmethod
+        def check_input_settings(**kwargs):
+            settings.append((kwargs["samplerate"], kwargs["channels"]))
+            if (kwargs["samplerate"], kwargs["channels"]) != (48000, 4):
+                raise ValueError("unsupported input format")
+
+        RawInputStream = FakeStream
+
+    monkeypatch.setitem(sys.modules, "sounddevice", FakeSoundDevice)
+    microphone = SoundDeviceMicrophone(device=15)
+    frames = microphone.frames()
+    frame = await anext(frames)
+    await frames.aclose()
+
+    assert settings == [(16000, 4), (16000, 1), (48000, 4)]
+    assert frame.sample_rate == 16000
+    assert len(frame.data) == 960
+    assert set(struct.iter_unpack("<h", frame.data)) == {(250,)}
 
 
 @pytest.mark.asyncio
