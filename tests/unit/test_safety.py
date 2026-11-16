@@ -56,3 +56,6 @@ def test_system_policy_covers_plan_critical_safety_behaviors():
     assert "only or best source of support" in prompt
     assert "accept the correction" in prompt
     assert "do not treat silence or disconnection as evidence" in prompt
+    assert "avoid canned praise and stock reassurance" in prompt
+    assert "do not repeat a greeting or introduction" in prompt
+    assert "ask directly but gently whether they are having thoughts of suicide" in prompt
